@@ -85,6 +85,9 @@ class MotionTemporalFusion(nn.Module):
         self.alignment = nn.Sequential(
             conv_block(2 * channels + 1, channels), nn.Conv3d(channels, 4, 1)
         )
+        # Zero displacement and uniform attention at initialisation.
+        nn.init.zeros_(self.alignment[-1].weight)
+        nn.init.zeros_(self.alignment[-1].bias)
         self.mix = nn.Conv3d(channels, channels, 1)
 
     def forward(self, x: Tensor, times: Tensor, positions: list[int] | None = None) -> Tensor:
@@ -241,6 +244,10 @@ class AssociationOutput:
     no_parent_logits: Tensor  # N_target
     division_logits: Tensor  # N_source
     velocity_um: Tensor  # N_source,3, microns per frame interval
+    log_variance: Tensor  # N_source,3, velocity log-variance
+    source_embeddings: Tensor
+    target_embeddings: Tensor
+    dt: float = 1.0
 
 
 def parent_log_probabilities(
@@ -293,7 +300,7 @@ class LineageAssociationHead(nn.Module):
         self.division = nn.Sequential(
             nn.Linear(hidden + 1, hidden // 2), nn.GELU(), nn.Linear(hidden // 2, 1)
         )
-        # Daughter-pair head: trained, not used at inference.
+        # Daughter-pair head: a training signal, not used at inference.
         self.daughters = nn.Sequential(
             nn.Linear(3 * hidden + 3, hidden), nn.GELU(), nn.Linear(hidden, 1)
         )
@@ -322,7 +329,38 @@ class LineageAssociationHead(nn.Module):
             self.no_parent(tgt).squeeze(-1),
             self.division(division_input).squeeze(-1),
             velocity,
+            logvar,
+            src,
+            tgt,
         )
+
+    def score_daughter_pairs(
+        self, output: AssociationOutput, triplets: Tensor, src_um: Tensor, tgt_um: Tensor
+    ) -> Tensor:
+        """Logits of [parent, daughter_a, daughter_b] rows (P,3), symmetric in the daughters."""
+        p, a, b = triplets.unbind(-1)
+        src, tgt = output.source_embeddings, output.target_embeddings
+        da = (tgt_um[a] - src_um[p]).norm(dim=-1)
+        db = (tgt_um[b] - src_um[p]).norm(dim=-1)
+        separation = (tgt_um[a] - tgt_um[b]).norm(dim=-1)
+        geometry = torch.stack((da + db, (da - db).abs(), separation), -1).to(src) / 10
+        features = torch.cat(
+            (src[p], tgt[a] + tgt[b], (tgt[a] - tgt[b]).abs(), geometry), -1
+        )
+        return self.daughters(features).squeeze(-1)
+
+
+def check_window(images: Tensor, times: Tensor | None) -> Tensor:
+    """Validate a B,T,1,Z,Y,X window; return its B,T frame times (default 0..T-1)."""
+    if images.ndim != 6 or images.shape[2] != 1:
+        raise ValueError("images must have shape B,T,1,Z,Y,X")
+    batch, frames = images.shape[:2]
+    if times is None:
+        times = torch.arange(frames, device=images.device, dtype=images.dtype)
+        times = times[None].expand(batch, -1)
+    if times.shape != (batch, frames):
+        raise ValueError("times must have shape B,T")
+    return times.to(images)
 
 
 class IsotropicLineageNet(nn.Module):
@@ -340,6 +378,7 @@ class IsotropicLineageNet(nn.Module):
         feature_channels: int = 32,
         association_hidden: int = 96,
         association_blocks: int = 2,
+        feature_dropout: float = 0.0,
     ) -> None:
         super().__init__()
         self.feature_channels = feature_channels
@@ -357,9 +396,20 @@ class IsotropicLineageNet(nn.Module):
         self.decode_fine = conv_block(c + c // 2, c)
         self.center = nn.Conv3d(c, 1, 1)
         self.offset = nn.Conv3d(c, 3, 1)
+        nn.init.constant_(self.center.bias, -4.0)
+        nn.init.zeros_(self.offset.weight)
+        nn.init.zeros_(self.offset.bias)
         self.association = LineageAssociationHead(
             2 * c, association_hidden, association_blocks
         )
+        # Noisy-student model noise: channel dropout on the bottleneck and the
+        # first decoder stage; parameter-free and inactive in eval().
+        self.feature_dropout = nn.Dropout3d(feature_dropout) if feature_dropout > 0 else nn.Identity()
+
+    def forward(self, images: Tensor, times: Tensor | None = None) -> DetectionOutput:
+        """Every frame of B,T,1,Z,Y,X windows (training)."""
+        times = check_window(images, times)
+        return self.decode_positions(self.encode(images), times)
 
     def encode(self, images: Tensor) -> dict[str, Tensor]:
         """The per-frame trunk (stem to coarse) of B,T,1,Z,Y,X volumes, each value
@@ -370,7 +420,7 @@ class IsotropicLineageNet(nn.Module):
         x = images.flatten(0, 1)
         fine = self.fine(self.stem(x))
         iso = self.isotropic(fine)
-        coarse = self.coarse(iso)
+        coarse = self.feature_dropout(self.coarse(iso))
         return {name: value.unflatten(0, (batch, frames))
                 for name, value in (("fine", fine), ("iso", iso), ("coarse", coarse))}
 
@@ -388,7 +438,7 @@ class IsotropicLineageNet(nn.Module):
             iso, fine = iso[:, positions], fine[:, positions]
         iso, fine = iso.flatten(0, 1), fine.flatten(0, 1)
         up = resize_at_stride(temporal, iso.shape[-3:], (0.5, 0.5, 0.5))
-        decoded = self.decode_iso(torch.cat((iso, up), 1))
+        decoded = self.feature_dropout(self.decode_iso(torch.cat((iso, up), 1)))
         up = resize_at_stride(decoded, fine.shape[-3:], (1.0, 0.5, 0.5))
         features = self.decode_fine(torch.cat((fine, up), 1))
         # The heads run in float32 even under autocast: in bf16 the centre

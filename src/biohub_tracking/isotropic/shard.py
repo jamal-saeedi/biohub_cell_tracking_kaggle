@@ -25,7 +25,11 @@ import numpy as np
 import torch
 
 from biohub_tracking.isotropic import predict as iso_predict
-from biohub_tracking.isotropic.config import IsotropicConfig, config_from_dict, config_to_dict
+from biohub_tracking.isotropic.config import (
+    IsotropicConfig,
+    config_from_dict,
+    config_to_dict,
+)
 from biohub_tracking.tracking_io import open_dataset, save_graph
 
 __all__ = ["predict_sharded", "movie_weight"]

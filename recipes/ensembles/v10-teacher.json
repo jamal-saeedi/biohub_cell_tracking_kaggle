@@ -1,0 +1,24 @@
+{
+  "runs": [
+    "R3-ft24-noisy-lc-s1",
+    "BX-wide-lc-s2/best-e23.pt",
+    "CX-deep-lc-s3/best-e20.pt"
+  ],
+  "member_tta_views": [
+    4,
+    4,
+    4
+  ],
+  "rescorers": [
+    "MRES-A3s-m0",
+    "MRES-A3s-m1",
+    "MRES-A3s-m2"
+  ],
+  "overrides": {
+    "solver": {
+      "association_temperature": 1.0,
+      "appearance_bias": 0.5,
+      "disappearance_weight": 12.0
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "runs": [
+    "NS1-ft24-noisy-lc-s1"
+  ],
+  "member_tta_views": [],
+  "rescorers": [
+    "NS1-ft24-noisy-lc-s1"
+  ],
+  "overrides": {
+    "solver": {
+      "association_temperature": 1.0,
+      "appearance_bias": 0.0,
+      "disappearance_weight": 8.0
+    }
+  }
+}

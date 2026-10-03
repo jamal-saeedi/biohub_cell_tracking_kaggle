@@ -1,17 +1,21 @@
-# Biohub cell tracking — 6th place solution (inference)
+# Biohub cell tracking — 6th place solution
 
-Inference code for our 6th-place solution to the Kaggle competition
+Inference and training code for our 6th-place solution to the Kaggle competition
 [Biohub Cell Tracking During Development](https://www.kaggle.com/competitions/biohub-cell-tracking-during-development).
-It predicts a cell lineage graph (nodes = cells, edges = frame-to-frame links
-and divisions) for every 3D time-lapse movie and writes `submission.csv`.
+It predicts a cell lineage graph (cells and their frame-to-frame links and divisions)
+for every 3D time-lapse movie and writes `submission.csv`.
+
+![Predicted tracks](docs/figures/tracks.gif)
 
 | Variant | Model set | Private LB | Public LB |
 |---|---|---|---|
 | `fin` (default) | final selected submission | **0.953** | 0.961 |
 | `best` | best-validation checkpoints | 0.955 | 0.958 |
 
-Both variants reproduce their Kaggle submissions byte for byte on the 4
-public test movies (Kaggle 2×T4).
+Both variants reproduce their Kaggle submissions byte for byte on the 4 public test
+movies (Kaggle 2×T4).
+
+**The solution, step by step, with figures: [docs/SOLUTION.md](docs/SOLUTION.md).**
 
 ## Links
 
@@ -21,57 +25,82 @@ public test movies (Kaggle 2×T4).
 | Code dataset (package + pinned wheels) | https://www.kaggle.com/datasets/jamalsaeedi/biohub-cell-tracking-kaggle |
 | Kaggle notebook | https://www.kaggle.com/code/jamalsaeedi/biohub-cell-tracking-inference |
 
-## Method
+## Method in brief
 
-1. **Detection and linking networks.** Six 3D networks (three
-   `IsotropicLineageNet`, three `MultiScaleLineageNet`) read a 3-frame window
-   and output, for every frame, cell-centre heat-maps and, for every detected
-   cell, an association over its candidate parents in the previous frame
-   (link, no-parent and division logits). EMA weights, fp16 inference.
-2. **Test-time augmentation.** Flip / transpose views per network
-   (4, 4, 4, 3, 2, 2), with the encoder output cached across overlapping
-   windows.
-3. **Ensemble.** Detections are averaged across networks. Each network's
-   candidate links are re-scored by its own gradient-boosted edge re-scorer
-   (23 geometric and model features); the re-scored probabilities are
-   averaged.
-4. **Global solve.** An event ILP (appearance, disappearance, link, division)
-   over the whole movie with [tracksdata](https://github.com/royerlab/tracksdata)
-   and SCIP, solved LP-first; the link cost includes a stage-drift-corrected
-   distance. A greedy solution is the fallback.
-5. **Post-processing.** Drift-compensated line-fit smoothing of positions,
-   coordinates clamped to the volume.
-6. **Time safety.** A per-movie time budget against the 12 h limit; a movie
-   that fails is re-run with fewer views, then with the primary network
-   only, then with model-free tracking, so every movie gets a prediction.
+```mermaid
+flowchart LR
+    IN["Movie"] --> ENS["6 networks<br/>+ TTA"]
+    ENS --> CELLS["Shared cells"]
+    CELLS --> CAND["Candidate links<br/>k-NN ≤ 20 µm"]
+    CAND --> LINK["Link probabilities<br/>6 heads → 6 own re-scorers → mean"]
+    LINK --> ILP["Global ILP"]
+    ILP --> SM["Drift-compensated<br/>smoothing"]
+    SM --> OUT["submission.csv"]
+```
+
+1. **Six 3D networks** (three `IsotropicLineageNet`, three `MultiScaleLineageNet`)
+   read 3-frame windows at native resolution. Each predicts cell centres and, for
+   every cell, a probability over its candidate parents in the previous frame plus an
+   explicit "new cell" class, a division score and a velocity.
+2. **Ensemble.** The networks' centre maps are averaged into one set of cells; each
+   network scores the same candidate links with its own head and its own
+   gradient-boosted re-scorer; the probabilities are averaged.
+3. **Global solve.** An event ILP (cells, appearances, disappearances, links,
+   divisions) over the whole movie, solved LP-first; the link cost includes a
+   stage-drift-corrected distance.
+4. **Post-processing.** Drift-compensated line-fit smoothing along tracks.
+5. **Training.** Three-state detection targets for the 3 % annotation, a count prior,
+   and several teacher → student rounds in which the teacher is the whole pipeline
+   above and its tracks become pseudo-labels.
 
 ## Layout
 
 ```
-├── LICENSE                 MIT
-├── SETTINGS.json           every input / output path (local and Kaggle)
-├── pyproject.toml          package + pinned dependencies
-├── notebooks/inference.ipynb
+├── README.md
+├── LICENSE                     MIT
+├── SETTINGS.json               input / output paths (local and Kaggle)
+├── pyproject.toml              package, pinned dependencies, command-line tools
+├── docs/
+│   ├── SOLUTION.md             the write-up
+│   └── figures/
+├── notebooks/
+│   ├── inference.ipynb         local and Kaggle inference
+│   └── training.ipynb          training walkthrough (runs on CPU on synthetic data)
+├── recipes/
+│   ├── train/                  one training configuration per model of the lineage
+│   └── ensembles/              teacher ensembles of each pseudo-label set; fin / best
 ├── src/biohub_tracking/
-│   ├── cli.py              biohub-predict
-│   ├── recipe.py           the two variants, file hashes, shipped config
-│   ├── settings.py         SETTINGS.json loader
-│   ├── isotropic/          config, decoding, ensemble, re-scorer, ILP, pipeline, sharding
-│   ├── models/             network definitions
-│   └── postprocess/        smoothing
+│   ├── cli.py                  biohub-predict
+│   ├── labels.py               biohub-pseudo-labels
+│   ├── ensembles.py            ensemble specs -> inference configs
+│   ├── recipe.py               the shipped variants and their file hashes
+│   ├── settings.py
+│   ├── isotropic/              decoding, ensemble, re-scorer, ILP, pipeline, sharding
+│   ├── models/                 the two network architectures
+│   ├── postprocess/            smoothing
+│   └── training/               data, targets, losses, trainer (biohub-train),
+│                               re-scorer training (biohub-train-rescorer)
 └── tools/
     ├── download_models.py      models from Kaggle Models into MODEL_DIR
+    ├── reproduce_training.sh   the full training lineage, step by step
+    ├── smoke_test.py           every stage end to end on synthetic data (CPU)
+    ├── make_synthetic_data.py
     ├── build_kaggle_dataset.py the Kaggle code dataset
     └── kernel-metadata.json    the Kaggle notebook
 ```
 
-## Run locally
+## Install
 
-Requirements: Linux, Python 3.12, an NVIDIA GPU with 16 GB (V100 and T4
-tested).
+Linux, Python 3.12, an NVIDIA GPU with 16 GB for inference (V100 and T4 tested) or
+24 GB for training (RTX 3090 / 4090).
 
 ```bash
-pip install -e ".[download]"
+pip install -e ".[download,train]"
+```
+
+## Inference
+
+```bash
 python tools/download_models.py            # both variants into models/
 ```
 
@@ -84,46 +113,93 @@ Put the test movies (`<stem>.zarr`) in `data/test/`, or edit `SETTINGS.json`:
 | `SUBMISSION_DIR` | `outputs` | `submission.csv` |
 | `WORK_DIR` | `outputs/work` | per-movie predictions |
 
-Then either
-
 ```bash
 biohub-predict                       # variant fin
 biohub-predict --variant best
 ```
 
-or run `notebooks/inference.ipynb` (`VARIANT` in its first cell). Both run the
-same code. Options: `--movies STEM ...`, `--num-shards N` (GPU processes;
-default one per GPU), `--settings PATH` (or `BIOHUB_SETTINGS`).
+or run `notebooks/inference.ipynb` (`VARIANT` in its first cell); both run the same
+code. Options: `--movies STEM ...`, `--num-shards N` (GPU processes, default one per
+GPU), `--settings PATH` (or `BIOHUB_SETTINGS`), and `--ensemble SPEC --runs DIR
+--rescorers DIR` to predict with models you trained yourself. On one V100 the 4
+public test movies take about 13 minutes.
 
-On one V100 the 4 public test movies take about 13 minutes.
+**On Kaggle:** open the [notebook](https://www.kaggle.com/code/jamalsaeedi/biohub-cell-tracking-inference)
+and *Copy & Edit*, or `kaggle kernels push -p tools`. It attaches the competition
+data, the code dataset and both model variations, installs the pinned wheels
+offline and writes `/kaggle/working/submission.csv` (GPU T4 ×2).
 
-## Run on Kaggle
+## Training
 
-Open the [notebook](https://www.kaggle.com/code/jamalsaeedi/biohub-cell-tracking-inference)
-and *Copy & Edit*, or push it with the Kaggle CLI:
+The training data is the competition's `train/` directory (`<stem>.zarr` +
+`<stem>.geff` for 199 movies) next to its `test/` directory; the 4 public test movies
+appear in both and are always kept out of training and pseudo-labelling.
+
+### Smoke test first
 
 ```bash
-kaggle kernels push -p tools
+python tools/smoke_test.py
 ```
 
-It attaches the competition data, the code dataset and both model variations,
-installs the pinned wheels offline (internet off) and writes
-`/kaggle/working/submission.csv`. Accelerator: GPU T4 ×2.
+Runs every stage below on synthetic movies with shrunken models, on CPU, in a few
+minutes, ending with a validated `submission.csv`. `notebooks/training.ipynb` walks
+through the same steps with plots.
+
+### The four tools
+
+| step | command | input | output |
+|---|---|---|---|
+| train a model | `biohub-train --recipe recipes/train/<run>.json` | movies; optionally a pseudo-label set and an initial checkpoint | `<out>/<run>/{best,last}.pt`, `history.json` |
+| fit re-scorers | `biohub-train-rescorer --ensemble recipes/ensembles/<spec>.json` | trained models; validation movies | one `<name>.npz` per model |
+| make pseudo-labels | `biohub-pseudo-labels --ensemble recipes/ensembles/<set>-teacher.json` | a teacher ensemble (models + re-scorers) | one `<stem>.npz` per training movie |
+| predict | `biohub-predict --ensemble recipes/ensembles/fin.json --runs ... --rescorers ...` | trained models + re-scorers | `submission.csv` |
+
+Example: one round of teacher → student.
+
+```bash
+# a model on the ground truth
+biohub-train --recipe recipes/train/W-link-s2.json \
+    --train-dir data/train --competition-dir data --out-dir outputs/training
+
+# its tracks on every training movie become pseudo-labels
+biohub-pseudo-labels --ensemble recipes/ensembles/W-link-s2-teacher.json \
+    --runs outputs/training --train-dir data/train --competition-dir data \
+    --out outputs/pseudo_labels/W-link-s2
+
+# a student on ground truth + pseudo-labels
+biohub-train --recipe recipes/train/P-l50-s2.json \
+    --train-dir data/train --competition-dir data --out-dir outputs/training \
+    --pseudo-dir outputs/pseudo_labels/W-link-s2
+```
+
+A recipe records everything that defines a run (architecture, data, augmentation,
+losses, optimiser, split seed) plus what it needs from earlier steps (`requires`:
+an initial checkpoint, a pseudo-label set) and the digest of its split on the full
+training set. `--set key=value` overrides any setting; `--smoke` shrinks any recipe.
+
+### Reproducing the shipped models
+
+```bash
+DATA=data OUT=outputs bash tools/reproduce_training.sh
+```
+
+runs the whole lineage in order: a ground-truth-only model, three rounds of one-model
+teachers, students on new splits and architectures, the two ensemble teachers (label
+sets v10 and v11), the six final models, and the re-scorers of both submissions
+(about a week of single-GPU time; independent runs can go in parallel). Training is
+deterministic per GPU architecture, not across architectures, so retrained weights
+match the method and the scores, not the shipped files bit for bit.
 
 ## Environment
 
 The submissions ran in the Kaggle Python image
 `gcr.io/kaggle-private-byod/python@sha256:37c64f7dd9c54116ecd1bcc88817c5469b88387388fade02bfa8bf3fc647d461`
-(torch 2.10.0+cu128, numpy 2.0.2, scipy 1.16.3, pandas 2.3.3, Python 3.12)
-plus the wheels in the code dataset (numba 0.65.1, polars 1.42.0,
-pyscipopt 6.2.1, ilpy 0.6.0, zarr 3.2.1, tracksdata 0.1.0rc6.dev3+g980c2d30a).
-`pyproject.toml` pins the same versions. Results are deterministic for a given
-GPU architecture; on a V100 the coordinates differ slightly from the T4 runs
-and the score on the public test movies is the same.
-
-## Training
-
-Training code and pseudo-label generation will be added in a later release.
+(torch 2.10.0+cu128, numpy 2.0.2, scipy 1.16.3, pandas 2.3.3, Python 3.12) plus the
+wheels in the code dataset (numba 0.65.1, polars 1.42.0, pyscipopt 6.2.1, ilpy 0.6.0,
+zarr 3.2.1, tracksdata 0.1.0rc6.dev3+g980c2d30a). `pyproject.toml` pins the same
+versions; training also needs LightGBM 4.7.0 for the re-scorers. Results are
+deterministic for a given GPU architecture; on a V100 the coordinates differ slightly
+from the T4 runs and the score on the public test movies is the same.
 
 ## License
 

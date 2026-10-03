@@ -140,6 +140,41 @@ class TreeEnsemble:
             return cls(blob["feature"], blob["threshold"], blob["left"], blob["right"],
                        blob["value"], blob["roots"], names)
 
+    def save(self, path: Path | str) -> None:
+        np.savez(path, feature=self.feature, threshold=self.threshold, left=self.left,
+                 right=self.right, value=self.value, roots=self.roots,
+                 feature_names=np.array(self.feature_names))
+
+    @classmethod
+    def from_lightgbm_dump(cls, dump: dict) -> TreeEnsemble:
+        """From `Booster.dump_model()` (numerical `<=` splits only)."""
+        feature, threshold, left, right, value, roots = [], [], [], [], [], []
+
+        def add(node) -> int:
+            index = len(feature)
+            feature.append(-1)
+            threshold.append(0.0)
+            left.append(-1)
+            right.append(-1)
+            value.append(0.0)
+            if "leaf_value" in node:
+                value[index] = float(node["leaf_value"])
+                return index
+            if node.get("decision_type", "<=") != "<=":
+                raise ValueError(f"unsupported decision type {node.get('decision_type')}")
+            feature[index] = int(node["split_feature"])
+            threshold[index] = float(node["threshold"])
+            left[index] = add(node["left_child"])
+            right[index] = add(node["right_child"])
+            return index
+
+        for tree in dump["tree_info"]:
+            roots.append(add(tree["tree_structure"]))
+        return cls(np.array(feature, np.int32), np.array(threshold, np.float64),
+                   np.array(left, np.int32), np.array(right, np.int32),
+                   np.array(value, np.float64), np.array(roots, np.int32),
+                   tuple(dump["feature_names"]))
+
     def predict(self, x: np.ndarray) -> np.ndarray:
         """Raw margin per row: numba when importable, else a numpy walk."""
         x = np.ascontiguousarray(x, dtype=np.float64)

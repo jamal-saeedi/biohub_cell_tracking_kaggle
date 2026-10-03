@@ -26,11 +26,16 @@ from biohub_tracking.isotropic.solver import (
     drift_corrected_distance,
     solve_event_ilp,
 )
-from biohub_tracking.isotropic.volumes import NativeMovie, normalize_native, open_native_movie
+from biohub_tracking.isotropic.volumes import (
+    NativeMovie,
+    normalize_native,
+    open_native_movie,
+)
 from biohub_tracking.tracking_io import save_graph
 
 __all__ = [
     "MoviePrediction",
+    "MovieTerms",
     "degraded_config",
     "load_for_inference",
     "predict",
@@ -402,6 +407,18 @@ def _load_rescorer(path):
     return ensemble
 
 
+def member_edge_terms(member_pairs: list[list[PairAssociation]], k: int,
+                      offset: np.ndarray, total: int):
+    """Model k's own flat `(edge_index, logp, null_logp, division_logit, velocity)`
+    on the shared nodes: the inputs of its re-scorer."""
+    own = [scored[k] for scored in member_pairs]
+    null, division, rows, cols, logps, _ = combine_pair_terms(own, offset, total)
+    edge_index = (np.stack((np.concatenate(rows), np.concatenate(cols))) if rows
+                  else np.empty((2, 0), dtype=np.int64))
+    logp = np.concatenate(logps) if logps else np.zeros(0)
+    return edge_index, logp, null, division, gap1_velocity(own, offset, total)
+
+
 def fuse_member_rescored(
     rescorers, pairs: list[PairAssociation], member_pairs: list[list[PairAssociation]],
     offset: np.ndarray, total: int, coords: np.ndarray, node_logit: np.ndarray, spacing,
@@ -423,14 +440,10 @@ def fuse_member_rescored(
                            "number of models")
     rescored = []
     for k, trees in enumerate(rescorers):
-        own = [scored[k] for scored in member_pairs]
-        null, division, rows, cols, logps, _ = combine_pair_terms(own, offset, total)
-        edge_index = (np.stack((np.concatenate(rows), np.concatenate(cols))) if rows
-                      else np.empty((2, 0), dtype=np.int64))
-        logp = np.concatenate(logps) if logps else np.zeros(0)
+        edge_index, logp, null, division, velocity = member_edge_terms(
+            member_pairs, k, offset, total)
         rescored.append(rescore_edges(
-            trees, coords, edge_index, logp, null, node_logit, division,
-            gap1_velocity(own, offset, total), spacing,
+            trees, coords, edge_index, logp, null, node_logit, division, velocity, spacing,
         ).astype(np.float32))
     log_k = np.log(float(models))
     fused, cursor = [], 0
@@ -465,29 +478,38 @@ def primary_only_config(config: IsotropicConfig) -> IsotropicConfig:
                    edge_rescorer=rescorer)
 
 
-def predict_movie(
-    loaded: LoadedModel,
-    ds_path: Path,
-    config: IsotropicConfig,
-    *,
-    max_frames: int | None = None,
-    ilp_timeout: float | None = None,
-) -> MoviePrediction:
-    """Decode, associate, re-score and solve one movie."""
+@dataclass
+class MovieTerms:
+    """A decoded movie's shared nodes and every model's scores of its candidate edges."""
+
+    movie: NativeMovie
+    pairs: list[PairAssociation]  # the models' average, per frame pair
+    member_pairs: list[list[PairAssociation]]  # every model's own scores, per pair
+    offset: np.ndarray  # where each frame's nodes start in the flat order
+    coords: np.ndarray  # (N,4) t,z,y,x native
+    node_logit: np.ndarray  # (N,)
+    decode_seconds: float
+    associate_seconds: float
+
+    @property
+    def total(self) -> int:
+        return int(self.offset[-1])
+
+
+def movie_terms(
+    loaded: LoadedModel, ds_path: Path, config: IsotropicConfig, *,
+    max_frames: int | None = None, keep_members: bool = False,
+) -> MovieTerms:
+    """Decode a movie and score every consecutive frame pair with every model."""
     movie = open_native_movie(ds_path, max_frames=max_frames)
 
     t0 = time.perf_counter()
     frames = decode_movie(loaded, movie, config)
     decode_seconds = time.perf_counter() - t0
 
-    member_rescore = bool(config.ensemble_rescorers)
-    if member_rescore and len(config.ensemble_rescorers) != 1 + len(loaded.ensemble):
-        raise ValueError(f"{len(config.ensemble_rescorers)} re-scorers for "
-                         f"{1 + len(loaded.ensemble)} loaded models")
-
     t0 = time.perf_counter()
     pairs: list[PairAssociation] = []
-    member_pairs: list[list[PairAssociation]] = []  # every model's own scores, per pair
+    member_pairs: list[list[PairAssociation]] = []
     for index in range(len(frames) - 1):
         if len(frames[index]) == 0 or len(frames[index + 1]) == 0:
             continue
@@ -496,17 +518,13 @@ def predict_movie(
             spacing=movie.spacing, config=config.candidates,
         )
         pairs.append(_combined(scored))
-        if member_rescore:
-            if len(scored) != len(config.ensemble_rescorers):
-                raise RuntimeError("member re-scorers need per-member descriptors")
+        if keep_members:
             member_pairs.append(scored)
     associate_seconds = time.perf_counter() - t0
 
     offset = np.cumsum([0] + [len(f) for f in frames])
-    total = int(offset[-1])
-    if total == 0:
+    if int(offset[-1]) == 0:
         raise RuntimeError(f"{movie.stem}: the detector produced no cells at all")
-
     coords = np.concatenate(
         [
             np.column_stack(
@@ -516,6 +534,31 @@ def predict_movie(
         ]
     )
     node_logit = np.concatenate([f.logits for f in frames]).astype(np.float64)
+    return MovieTerms(movie, pairs, member_pairs, offset, coords, node_logit,
+                      decode_seconds, associate_seconds)
+
+
+def predict_movie(
+    loaded: LoadedModel,
+    ds_path: Path,
+    config: IsotropicConfig,
+    *,
+    max_frames: int | None = None,
+    ilp_timeout: float | None = None,
+) -> MoviePrediction:
+    """Decode, associate, re-score and solve one movie."""
+    member_rescore = bool(config.ensemble_rescorers)
+    if member_rescore and len(config.ensemble_rescorers) != 1 + len(loaded.ensemble):
+        raise ValueError(f"{len(config.ensemble_rescorers)} re-scorers for "
+                         f"{1 + len(loaded.ensemble)} loaded models")
+    terms = movie_terms(loaded, ds_path, config, max_frames=max_frames,
+                        keep_members=member_rescore)
+    if member_rescore and any(len(scored) != len(config.ensemble_rescorers)
+                              for scored in terms.member_pairs):
+        raise RuntimeError("member re-scorers need per-member descriptors")
+    movie, pairs, member_pairs = terms.movie, terms.pairs, terms.member_pairs
+    offset, total, coords, node_logit = terms.offset, terms.total, terms.coords, terms.node_logit
+    decode_seconds, associate_seconds = terms.decode_seconds, terms.associate_seconds
     rescore_seconds = 0.0
     if member_rescore:
         t0 = time.perf_counter()
@@ -524,7 +567,7 @@ def predict_movie(
             offset, total, coords, node_logit, movie.spacing,
         )
         rescore_seconds = time.perf_counter() - t0
-    del member_pairs
+    del member_pairs, terms
     null_logp, division_logit, edge_rows, edge_cols, edge_logp, _ = (
         combine_pair_terms(pairs, offset, total)
     )

@@ -18,6 +18,7 @@ import math
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
 
 from biohub_tracking.models.isotropic_lineage import (
     AssociationOutput,
@@ -25,6 +26,7 @@ from biohub_tracking.models.isotropic_lineage import (
     IsotropicLineageNet,
     ResidualBlock,
     SparseAssociationBlock,
+    check_window,
     conv_block,
     edge_geometry,
     normalized_grid,
@@ -44,6 +46,27 @@ __all__ = [
 
 #: Nominal voxel spacing (Z, Y, X) in microns, which sets the sampling bounds in cells.
 NOMINAL_SPACING_ZYX: tuple[float, float, float] = (1.625, 0.40625, 0.40625)
+
+
+# Initial sample directions: cube corners, then axes.
+_PATTERN = [
+    (1, 1, 1), (1, -1, -1), (-1, 1, -1), (-1, -1, 1),
+    (1, 1, -1), (1, -1, 1), (-1, 1, 1), (-1, -1, -1),
+    (1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1),
+]
+
+
+def _pattern_bias(samples: int, *, include_centre: bool, fraction: float = 0.5) -> Tensor:
+    """(samples, 3) pre-tanh offsets placing the samples at `fraction` of the bound."""
+    points = [(0.0, 0.0, 0.0)] if include_centre else []
+    for direction in _PATTERN:
+        if len(points) == samples:
+            break
+        norm = math.sqrt(sum(v * v for v in direction))
+        points.append(tuple(fraction * v / norm for v in direction))
+    if len(points) < samples:
+        raise ValueError(f"at most {len(_PATTERN) + include_centre} samples are supported")
+    return torch.atanh(torch.tensor(points, dtype=torch.float32))
 
 
 def _cells(radius_um: float, stride_zyx: tuple[int, int, int]) -> tuple[float, float, float]:
@@ -75,6 +98,17 @@ class GatedTemporalFusion(nn.Module):
         )
         self.mix = nn.Conv3d(channels, channels, 1)
         self.gate = nn.Conv3d(2 * channels, 1, 1)
+        # Identity at initialisation (zero mix and gate), samples spread on a pattern.
+        last = self.alignment[-1]
+        nn.init.zeros_(last.weight)
+        with torch.no_grad():
+            bias = last.bias.view(samples, 4)
+            bias.zero_()
+            bias[:, :3] = _pattern_bias(samples, include_centre=True)
+        nn.init.zeros_(self.mix.weight)
+        nn.init.zeros_(self.mix.bias)
+        nn.init.zeros_(self.gate.weight)
+        nn.init.zeros_(self.gate.bias)
 
     def project(self, x: Tensor) -> tuple[Tensor, Tensor]:
         """`(ref(x_t), nbr(x_t))` per frame, B,T,C,Z,Y,X each (cacheable per frame)."""
@@ -146,6 +180,12 @@ class LearnedDescriptorSampler(nn.Module):
         self.query = nn.Sequential(
             nn.Linear(2 * channels, channels), nn.GELU(), nn.Linear(channels, 4 * samples)
         )
+        last = self.query[-1]
+        nn.init.zeros_(last.weight)
+        with torch.no_grad():
+            bias = last.bias.view(samples, 4)
+            bias.zero_()
+            bias[:, :3] = _pattern_bias(samples, include_centre=False)
 
     def forward(
         self, features: Tensor, coords_native: Tensor, stride_zyx: tuple[int, int, int] = (1, 2, 2)
@@ -197,6 +237,8 @@ class RefiningAssociationHead(nn.Module):
             nn.Linear(2 * hidden + 8, hidden), nn.GELU(), nn.Linear(hidden, 1)
         )
         self.refine = nn.Sequential(nn.Linear(hidden + 7, hidden), nn.GELU(), nn.Linear(hidden, 6))
+        nn.init.zeros_(self.refine[-1].weight)  # starts as a `LineageAssociationHead`
+        nn.init.zeros_(self.refine[-1].bias)
         self.blocks = nn.ModuleList([SparseAssociationBlock(hidden) for _ in range(blocks - 1)])
         self.edge = nn.Sequential(
             nn.Linear(2 * hidden + 8, hidden), nn.GELU(), nn.Linear(hidden, 1)
@@ -205,7 +247,7 @@ class RefiningAssociationHead(nn.Module):
         self.division = nn.Sequential(
             nn.Linear(hidden + 1, hidden // 2), nn.GELU(), nn.Linear(hidden // 2, 1)
         )
-        # Daughter-pair head: trained, not used at inference.
+        # Daughter-pair head: a training signal, not used at inference.
         self.daughters = nn.Sequential(
             nn.Linear(3 * hidden + 8, hidden), nn.GELU(), nn.Linear(hidden, 1)
         )
@@ -251,7 +293,39 @@ class RefiningAssociationHead(nn.Module):
             self.no_parent(tgt).squeeze(-1),
             self.division(division_input).squeeze(-1),
             velocity,
+            logvar,
+            src,
+            tgt,
+            dt=float(dt),
         )
+
+    def score_daughter_pairs(
+        self, output: AssociationOutput, triplets: Tensor, src_um: Tensor, tgt_um: Tensor
+    ) -> Tensor:
+        """Logits of [parent, daughter_a, daughter_b] rows (P,3): the
+        `LineageAssociationHead` features plus elapsed time and the daughters'
+        midpoint relative to the parent's predicted endpoint."""
+        p, a, b = triplets.unbind(-1)
+        src, tgt = output.source_embeddings, output.target_embeddings
+        dt = float(output.dt)
+        da = (tgt_um[a] - src_um[p]).norm(dim=-1)
+        db = (tgt_um[b] - src_um[p]).norm(dim=-1)
+        separation = (tgt_um[a] - tgt_um[b]).norm(dim=-1)
+        endpoint = src_um[p] + output.velocity_um[p].float() * dt
+        midpoint = 0.5 * (tgt_um[a] + tgt_um[b]) - endpoint
+        geometry = torch.cat(
+            (
+                torch.stack((da + db, (da - db).abs(), separation), -1),
+                midpoint,
+                midpoint.norm(dim=-1, keepdim=True),
+            ),
+            -1,
+        ) / 10
+        geometry = torch.cat((geometry, geometry.new_full((len(p), 1), dt)), -1).to(src)
+        features = torch.cat(
+            (src[p], tgt[a] + tgt[b], (tgt[a] - tgt[b]).abs(), geometry), -1
+        )
+        return self.daughters(features).squeeze(-1)
 
 
 class _Residual(nn.Module):
@@ -270,6 +344,9 @@ class MultiScaleLineageNet(nn.Module):
     Channel plan for `feature_channels = c`: fine (1,2,2) c/2, isotropic (1,4,4)
     c with `iso_blocks` residual blocks, coarse (2,8,8) 2c, decoder c.
     `temporal_samples` / `temporal_radius_um` are (coarse, isotropic).
+
+    In training the isotropic fusion and the two adapters recompute their
+    activations in the backward pass (`torch.utils.checkpoint`) to save memory.
     """
 
     def __init__(
@@ -283,6 +360,7 @@ class MultiScaleLineageNet(nn.Module):
         descriptor_samples: int = 4,
         descriptor_radius_um: float = 3.0,
         iso_blocks: int = 2,
+        feature_dropout: float = 0.0,
     ) -> None:
         super().__init__()
         temporal_samples = tuple(int(v) for v in temporal_samples)
@@ -310,12 +388,21 @@ class MultiScaleLineageNet(nn.Module):
         self.associate_adapter = _Residual(conv_block(c, c))
         self.center = nn.Conv3d(c, 1, 1)
         self.offset = nn.Conv3d(c, 3, 1)
+        nn.init.constant_(self.center.bias, -4.0)
+        nn.init.zeros_(self.offset.weight)
+        nn.init.zeros_(self.offset.bias)
         sampler = LearnedDescriptorSampler(
             c, descriptor_samples, _cells(descriptor_radius_um, (1, 2, 2))
         )
         self.association = RefiningAssociationHead(
             sampler.out_channels, association_hidden, association_blocks, sampler=sampler
         )
+        self.feature_dropout = nn.Dropout3d(feature_dropout) if feature_dropout > 0 else nn.Identity()
+
+    def forward(self, images: Tensor, times: Tensor | None = None) -> DetectionOutput:
+        """Every frame of B,T,1,Z,Y,X windows (training)."""
+        times = check_window(images, times).float()
+        return self.decode_positions(self.encode(images), times)
 
     def encode(self, images: Tensor) -> dict[str, Tensor]:
         """Everything that sees one frame alone, each value B,T,C,Z,Y,X: the trunk
@@ -326,7 +413,7 @@ class MultiScaleLineageNet(nn.Module):
         x = images.flatten(0, 1)
         fine = self.fine(self.stem(x))
         iso = self.isotropic(fine)
-        coarse = self.coarse(iso)
+        coarse = self.feature_dropout(self.coarse(iso))
         out = {name: value.unflatten(0, (batch, frames))
                for name, value in (("fine", fine), ("iso", iso), ("coarse", coarse))}
         if frames > 1:
@@ -351,16 +438,16 @@ class MultiScaleLineageNet(nn.Module):
             projected = {"coarse": (encoded["coarse_ref"], encoded["coarse_nbr"]),
                          "iso": (encoded["iso_ref"], encoded["iso_nbr"])}
         coarse = self.temporal_coarse(coarse, times, positions, projected.get("coarse"))
-        iso = self.temporal_iso(iso, times, positions, projected.get("iso"))
+        iso = self._recompute(self.temporal_iso, iso, times, positions, projected.get("iso"))
         if positions is not None:
             fine = fine[:, positions]
         coarse, iso, fine = coarse.flatten(0, 1), iso.flatten(0, 1), fine.flatten(0, 1)
         up = resize_at_stride(coarse, iso.shape[-3:], (0.5, 0.5, 0.5))
-        decoded = self.decode_iso(torch.cat((iso, up), 1))
+        decoded = self.feature_dropout(self.decode_iso(torch.cat((iso, up), 1)))
         up = resize_at_stride(decoded, fine.shape[-3:], (1.0, 0.5, 0.5))
         shared = self.decode_fine(torch.cat((fine, up), 1))
-        detection = self.detect_adapter(shared)
-        features = self.associate_adapter(shared)
+        detection = self._recompute(self.detect_adapter, shared)
+        features = self._recompute(self.associate_adapter, shared)
         with torch.autocast(detection.device.type, enabled=False):  # float32 heads
             head_input = detection.float()
             center = self.center(head_input)
@@ -371,6 +458,11 @@ class MultiScaleLineageNet(nn.Module):
             features.unflatten(0, (batch, kept)),
             descriptor=self.association.sampler,
         )
+
+    def _recompute(self, module: nn.Module, *inputs):
+        if not (self.training and torch.is_grad_enabled()):
+            return module(*inputs)
+        return checkpoint(module, *inputs, use_reentrant=False)
 
 
 def build_lineage_model(architecture: str = "isotropic_lineage", **kwargs) -> nn.Module:

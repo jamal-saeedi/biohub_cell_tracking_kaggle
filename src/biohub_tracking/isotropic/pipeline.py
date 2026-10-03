@@ -15,8 +15,12 @@ import numpy as np
 from biohub_tracking.isotropic import predict as iso_predict
 from biohub_tracking.isotropic import shard as iso_shard
 from biohub_tracking.isotropic.config import IsotropicConfig
+from biohub_tracking.submission import (
+    MovieResult,
+    validate_submission,
+    write_test_submission,
+)
 from biohub_tracking.tracking_io import graph_from_geff
-from biohub_tracking.submission import MovieResult, validate_submission, write_test_submission
 
 __all__ = [
     "graph_to_dicts", "minimal_repair", "run_pipeline", "smooth_positions",

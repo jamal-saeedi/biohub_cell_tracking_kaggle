@@ -15,7 +15,6 @@ from dataclasses import dataclass
 
 import numpy as np
 
-
 __all__ = ["LPFixResult", "solve_lpfix"]
 
 

@@ -1,0 +1,14 @@
+{
+  "runs": [
+    "P-l50-s2"
+  ],
+  "member_tta_views": [],
+  "rescorers": [],
+  "overrides": {
+    "solver": {
+      "association_temperature": 1.0,
+      "appearance_bias": 0.0,
+      "disappearance_weight": 4.0
+    }
+  }
+}

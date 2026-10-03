@@ -1,0 +1,27 @@
+{
+  "runs": [
+    "R3-ft24-noisy-lc-s1",
+    "B3-v11-ft32-noisy-lc-s31",
+    "D2-v11-ft32-noisy-lc-s33",
+    "EX-ms-lc-s5",
+    "FX-ms-lc-s6",
+    "GX-ms-lc-s7"
+  ],
+  "member_tta_views": [
+    4,
+    4,
+    4,
+    3,
+    2,
+    2
+  ],
+  "rescorers": [
+    "MRES-BEST-444322-m0",
+    "MRES-BEST-444322-m1",
+    "MRES-BEST-444322-m2",
+    "MRES-BEST-444322-m3",
+    "MRES-BEST-444322-m4",
+    "MRES-BEST-444322-m5"
+  ],
+  "overrides": {}
+}

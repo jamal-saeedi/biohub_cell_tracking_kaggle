@@ -1,0 +1,121 @@
+{
+  "name": "B2-v10-e48-noisy-lc-s22",
+  "requires": {
+    "init": {
+      "run": "BX-wide-lc-s2",
+      "checkpoint": "best-e23.pt"
+    },
+    "pseudo_labels": "v10"
+  },
+  "split_digest": "63933f1290177333",
+  "parameters": 4380845,
+  "config": {
+    "split_seed": 271828,
+    "split_ratios": [
+      0.7,
+      0.15,
+      0.15
+    ],
+    "fold_test_into_train": true,
+    "seed": 22,
+    "epochs": 48,
+    "batch_size": 1,
+    "accumulation": 8,
+    "workers": 6,
+    "val_batch_size": 2,
+    "val_samples": 192,
+    "detection_only_steps": 0,
+    "association_ramp_steps": 0,
+    "detection_threshold": 0.3,
+    "match_radius_um": 3.0,
+    "selection_metric": "loss_parent",
+    "early_stop_patience": 10,
+    "ema_decay": 0.999,
+    "ema_warmup": 1000,
+    "amp": true,
+    "log_every": 20,
+    "model": {
+      "stem_channels": 8,
+      "feature_channels": 64,
+      "association_hidden": 256,
+      "association_blocks": 3,
+      "feature_dropout": 0.2,
+      "architecture": "isotropic_lineage"
+    },
+    "data": {
+      "frames": 3,
+      "crop_zyx": [
+        64,
+        256,
+        256
+      ],
+      "samples_per_epoch": 2048,
+      "random_crop_probability": 0.15,
+      "division_anchor_probability": 0.25,
+      "crop_jitter_fraction": 0.25,
+      "sigma_um": 1.5,
+      "positive_radius_um": 3.0,
+      "ignore_radius_um": 6.0,
+      "background_quantile": 0.5,
+      "distractors_per_frame": 256,
+      "distractor_min_distance_um": 3.0,
+      "distractor_quantile": 0.99,
+      "candidate_radius_um": 20.0,
+      "candidate_max_per_node": 4,
+      "parent_drop_probability": 0.15,
+      "coord_jitter_um": 0.5,
+      "max_triplet_negatives": 4,
+      "pseudo_match_um": 4.0,
+      "pseudo_min_node_prob": 0.5,
+      "pseudo_min_edge_prob": 0.5,
+      "augment": {
+        "lateral_d4": true,
+        "gamma_range": [
+          0.8,
+          1.25
+        ],
+        "depth_gain": 0.15,
+        "shot_noise": 0.2,
+        "noise_sigma": 0.05,
+        "noise_probability": 0.5,
+        "intensity_probability": 0.5,
+        "drift_probability": 0.5,
+        "drift_max_um": 6.0,
+        "low_contrast_probability": 0.3,
+        "low_contrast_min": 0.1,
+        "low_contrast_noise": 0.1
+      }
+    },
+    "optim": {
+      "learning_rate": 3e-05,
+      "weight_decay": 0.01,
+      "betas": [
+        0.9,
+        0.999
+      ],
+      "warmup_steps": 100,
+      "total_steps": 12288,
+      "min_lr_factor": 0.05,
+      "grad_clip": 1.0
+    },
+    "weights": {
+      "center": 1.0,
+      "offset": 1.0,
+      "parent": 1.0,
+      "division": 0.5,
+      "velocity": 0.1,
+      "daughter": 0.25,
+      "count": 1.0,
+      "background": 1.0,
+      "pseudo": 0.5,
+      "focal_alpha": 2.0,
+      "focal_beta": 4.0,
+      "division_pos_weight": 20.0
+    },
+    "run_name": "B2-v10-e48-noisy-lc-s22",
+    "proposal_fraction": 0.0,
+    "proposal_start_steps": 600,
+    "proposal_ramp_steps": 2000,
+    "proposal_val": false
+  }
+}
