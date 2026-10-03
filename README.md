@@ -21,22 +21,16 @@ movies (Kaggle 2×T4).
 
 | | |
 |---|---|
+| Code (this repository) | https://github.com/jamal-saeedi/biohub_cell_tracking_kaggle |
+| Write-up | [docs/SOLUTION.md](docs/SOLUTION.md) |
 | Models (MIT) | https://www.kaggle.com/models/jamalsaeedi/biohub-cell-tracking |
 | Code dataset (package + pinned wheels) | https://www.kaggle.com/datasets/jamalsaeedi/biohub-cell-tracking-kaggle |
 | Kaggle notebook | https://www.kaggle.com/code/jamalsaeedi/biohub-cell-tracking-inference |
+| Competition | https://www.kaggle.com/competitions/biohub-cell-tracking-during-development |
 
 ## Method in brief
 
-```mermaid
-flowchart LR
-    IN["Movie"] --> ENS["6 networks<br/>+ TTA"]
-    ENS --> CELLS["Shared cells"]
-    CELLS --> CAND["Candidate links<br/>k-NN ≤ 20 µm"]
-    CAND --> LINK["Link probabilities<br/>6 heads → 6 own re-scorers → mean"]
-    LINK --> ILP["Global ILP"]
-    ILP --> SM["Drift-compensated<br/>smoothing"]
-    SM --> OUT["submission.csv"]
-```
+![The pipeline, step by step](docs/figures/overview.png)
 
 1. **Six 3D networks** (three `IsotropicLineageNet`, three `MultiScaleLineageNet`)
    read 3-frame windows at native resolution. Each predicts cell centres and, for
@@ -59,7 +53,8 @@ flowchart LR
 
 ![MultiScaleLineageNet](docs/figures/architecture_multiscale.png)
 
-Both share the association head that links the cells of two consecutive frames:
+Both use the same association-head design to link the cells of two consecutive
+frames (the MultiScale head adds in-graph motion refinement):
 
 ![Association head](docs/figures/architecture_linker.png)
 
@@ -75,6 +70,7 @@ Both share the association head that links the cells of two consecutive frames:
 ```
 ├── README.md
 ├── LICENSE                     MIT
+├── CITATION.cff                how to cite
 ├── SETTINGS.json               input / output paths (local and Kaggle)
 ├── pyproject.toml              package, pinned dependencies, command-line tools
 ├── docs/
@@ -92,6 +88,8 @@ Both share the association head that links the cells of two consecutive frames:
 │   ├── ensembles.py            ensemble specs -> inference configs
 │   ├── recipe.py               the shipped variants and their file hashes
 │   ├── settings.py
+│   ├── submission.py           CSV writing and validation
+│   ├── tracking_io.py          movie and graph I/O
 │   ├── isotropic/              decoding, ensemble, re-scorer, ILP, pipeline, sharding
 │   ├── models/                 the two network architectures
 │   ├── postprocess/            smoothing
@@ -126,7 +124,7 @@ Put the test movies (`<stem>.zarr`) in `data/test/`, or edit `SETTINGS.json`:
 | Key | Default | |
 |---|---|---|
 | `TEST_DATA_DIR` | `data/test` | input movies |
-| `MODEL_DIR` | `models` | model files (`<MODEL_DIR>/<variant>/<version>/...`) |
+| `MODEL_DIR` | `models` | model files (`<MODEL_DIR>/<handle>/<version>/...`, e.g. `models/mres-fin-444322/1/`) |
 | `SUBMISSION_DIR` | `outputs` | `submission.csv` |
 | `WORK_DIR` | `outputs/work` | per-movie predictions |
 
@@ -135,7 +133,7 @@ biohub-predict                       # variant fin
 biohub-predict --variant best
 ```
 
-or run `notebooks/inference.ipynb` (`VARIANT` in its first cell); both run the same
+or run `notebooks/inference.ipynb` (`VARIANT` in its first code cell); both run the same
 code. Options: `--movies STEM ...`, `--num-shards N` (GPU processes, default one per
 GPU), `--settings PATH` (or `BIOHUB_SETTINGS`), and `--ensemble SPEC --runs DIR
 --rescorers DIR` to predict with models you trained yourself. On one V100 the 4
@@ -167,7 +165,7 @@ through the same steps with plots.
 | step | command | input | output |
 |---|---|---|---|
 | train a model | `biohub-train --recipe recipes/train/<run>.json` | movies; optionally a pseudo-label set and an initial checkpoint | `<out>/<run>/{best,last}.pt`, `history.json` |
-| fit re-scorers | `biohub-train-rescorer --ensemble recipes/ensembles/<spec>.json` | trained models; validation movies | one `<name>.npz` per model |
+| fit re-scorers | `biohub-train-rescorer --ensemble recipes/ensembles/<spec>.json --names <one per model>` | trained models; validation movies | one `<name>.npz` per model |
 | make pseudo-labels | `biohub-pseudo-labels --ensemble recipes/ensembles/<set>-teacher.json` | a teacher ensemble (models + re-scorers) | one `<stem>.npz` per training movie |
 | predict | `biohub-predict --ensemble recipes/ensembles/fin.json --runs ... --rescorers ...` | trained models + re-scorers | `submission.csv` |
 
@@ -205,7 +203,7 @@ teachers, students on new splits and architectures, the two ensemble teachers (l
 sets v10 and v11), the six final models, and the re-scorers of both submissions
 (about a week of single-GPU time; independent runs can go in parallel). Training is
 deterministic per GPU architecture, not across architectures, so retrained weights
-match the method and the scores, not the shipped files bit for bit.
+follow the same method but are not bit-identical to the shipped files.
 
 ## Environment
 
@@ -214,10 +212,29 @@ The submissions ran in the Kaggle Python image
 (torch 2.10.0+cu128, numpy 2.0.2, scipy 1.16.3, pandas 2.3.3, Python 3.12) plus the
 wheels in the code dataset (numba 0.65.1, polars 1.42.0, pyscipopt 6.2.1, ilpy 0.6.0,
 zarr 3.2.1, tracksdata 0.1.0rc6.dev3+g980c2d30a). `pyproject.toml` pins the same
-versions; training also needs LightGBM 4.7.0 for the re-scorers. Results are
+versions (tracksdata by its git commit; it brings in ilpy, 0.6.0 in the code dataset);
+training also needs
+LightGBM 4.7.0 for the re-scorers. Results are
 deterministic for a given GPU architecture; on a V100 the coordinates differ slightly
 from the T4 runs and the score on the public test movies is the same.
 
 ## License
 
 MIT, see [LICENSE](LICENSE).
+
+## Citation
+
+If you use this code or the models, please cite the solution:
+
+```bibtex
+@misc{saeedi2026biohubtracking,
+  author       = {Saeedi, Jamal},
+  title        = {Biohub - Cell Tracking During Development: 6th Place Solution},
+  year         = {2026},
+  howpublished = {Kaggle competition write-up},
+  url          = {https://www.kaggle.com/competitions/biohub-cell-tracking-during-development}
+}
+```
+
+The methods and tools the solution builds on are cited in
+[docs/SOLUTION.md](docs/SOLUTION.md#references).

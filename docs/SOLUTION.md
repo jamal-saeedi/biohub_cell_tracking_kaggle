@@ -3,6 +3,14 @@
 **Private 0.953 (6th place)**, public 0.961. A second submission with the same
 pipeline and best-validation checkpoints scored private 0.955.
 
+| | |
+|---|---|
+| Code (GitHub) | <https://github.com/jamal-saeedi/biohub_cell_tracking_kaggle> |
+| Models (Kaggle Models, MIT) | <https://www.kaggle.com/models/jamalsaeedi/biohub-cell-tracking> |
+| Code dataset (package + pinned wheels) | <https://www.kaggle.com/datasets/jamalsaeedi/biohub-cell-tracking-kaggle> |
+| Inference notebook (Kaggle) | <https://www.kaggle.com/code/jamalsaeedi/biohub-cell-tracking-inference> |
+| Competition | <https://www.kaggle.com/competitions/biohub-cell-tracking-during-development> |
+
 ![Predicted tracks on a public test movie](figures/tracks.gif)
 
 *Predicted tracks on public test movie `44b6_0113de3b` (z projection, every second
@@ -36,6 +44,8 @@ alike, and a linker that sees only coordinates cannot do that. So:
 10. [Model summary](#10-model-summary)
 11. [Code](#11-code)
 
+[References](#references) · [How to cite](#how-to-cite)
+
 ---
 
 ## 1. The task
@@ -45,7 +55,8 @@ voxels, anisotropic spacing 1.625 µm in z and 0.406 µm in y and x, with up to 
 400 cells per frame.
 
 **Output.** Every cell centre in every frame, and the links from each cell at *t* to
-its successor(s) at *t + 1*. A cell with two successors divided.
+its successor(s) at *t + 1*. A cell with two successors divided. This is the Cell
+Tracking Challenge setting [2], run as a Kaggle competition [1].
 
 **Metric.** Per movie, an edge Jaccard index with a penalty on the node count, then a
 weighted mean over movies, plus a division term:
@@ -73,17 +84,7 @@ Two consequences shaped everything:
 
 ## 2. The pipeline at a glance
 
-```mermaid
-flowchart LR
-    IN["Movie<br/>100 × 64×256×256"] --> ENS["6 networks<br/>2–4 TTA views each"]
-    ENS --> CELLS["Shared cells<br/>mean centre logits → peaks"]
-    CELLS --> CAND["Candidate links<br/>k-NN ≤ 20 µm"]
-    ENS -. descriptors .-> LINK
-    CAND --> LINK["Link probabilities<br/>6 heads → 6 own re-scorers → mean"]
-    LINK --> ILP["Global ILP<br/>tracks + divisions"]
-    ILP --> SM["Drift-compensated<br/>smoothing"]
-    SM --> OUT["submission.csv"]
-```
+![The pipeline, step by step](figures/overview.png)
 
 - **Six networks of two architectures.** Each detects cells *and* scores their links
   to the previous frame, in one model.
@@ -105,11 +106,11 @@ flowchart LR
 
 *One frame through the first stages: input, centre heatmap, detected cells and the
 candidate links to the next frame coloured by the predicted parent probability. This
-frame follows a stage jump, so most links are long and parallel.*
+frame pair spans a stage jump, so most links are long and parallel.*
 
 Both architectures read a **3-frame window** (t − 1, t, t + 1) at native resolution:
 no resampling, no cropping at inference. Each frame is min–max scaled and z-scored on
-its own. A network has two parts: a **detector** (a 3D U-Net-like encoder–decoder with
+its own. A network has two parts: a **detector** (a 3D U-Net-like [3, 4] encoder–decoder with
 temporal fusion) and an **association head** that links the detected cells of two
 consecutive frames.
 
@@ -117,7 +118,7 @@ consecutive frames.
 
 ![Association head](figures/architecture_linker.png)
 
-1. **Encoder (per frame).** A 3D convolutional stack (Conv3d → GroupNorm → GELU) that
+1. **Encoder (per frame).** A 3D convolutional stack (Conv3d → GroupNorm [5] → GELU [6]) that
    handles the 4:1 anisotropy in two steps: two lateral-only reductions reach a
    near-isotropic 1.625 µm grid, then a 3D reduction reaches a coarse 3.25 µm grid.
    Frames are encoded independently, so at inference each frame is encoded once and
@@ -135,14 +136,16 @@ consecutive frames.
      a velocity and a per-axis uncertainty;
    - each candidate link gets the displacement and the uncertainty-normalised
      residual displacement − velocity as geometric features;
-   - several layers of bidirectional sparse graph attention run over the candidate
+   - several layers of bidirectional sparse graph attention [7, 8] run over the candidate
      links, so cells at *t* and *t + 1* update each other;
    - the head outputs, per cell, a softmax over its candidate parents **plus a
      "new cell" class**, a division score per parent, a score per daughter pair, and
      the velocity.
 
 The explicit "new cell" probability is well calibrated, and becomes the solver's
-appearance cost (§6.5).
+appearance cost (§6.5). Scoring links with attention over cell descriptors is related
+to Trackastra [9]; ours is sparse, runs on a k-NN candidate graph, and is trained
+jointly with the detector.
 
 ### 3.2 The two architectures
 
@@ -150,9 +153,9 @@ appearance cost (§6.5).
 
 | | IsotropicLineageNet | MultiScaleLineageNet |
 |---|---|---|
-| Temporal fusion | one learned sample per neighbour frame, coarse grid | gated fusion at two scales (coarse + isotropic), several learned samples per neighbour; the gate starts at zero |
+| Temporal fusion | one learned sample per neighbour frame, coarse grid | fusion at two scales (coarse + isotropic), several learned samples per neighbour and a per-voxel gate; starts as the identity (zero-initialised projection) |
 | Detection vs linking features | shared | separate residual task adapters |
-| Cell descriptor | centre sample + local mean | + attention-pooled samples at learned offsets (≤ 3 µm) |
+| Cell descriptor | centre sample + local mean | + attention-pooled samples at learned offsets (within ± 3 µm per axis), as in deformable sampling [10] |
 | Association head | attention blocks | + in-graph motion refinement: a soft assignment to candidate successors updates velocity and uncertainty midway |
 | Linker training input | annotated positions with 0.5 µm jitter | 75 % of matched annotated cells moved onto the detector's own detections |
 | Parameters | 2.5–4.8 M | 5.7 M |
@@ -163,7 +166,7 @@ appearance cost (§6.5).
 |---|---|---|---|---:|---|---:|
 | A | R3-ft24-noisy-lc-s1 | Isotropic | 48 / 192 × 3 | 2.5 M | third teacher → student round | 4 |
 | B | B3-v11-ft32-noisy-lc-s31 | Isotropic, wide | 64 / 256 × 3 | 4.4 M | fine-tuned twice on ensemble labels | 4 |
-| C | D2-v11-ft32-noisy-lc-s33 | Isotropic, wide + deep | 64 / 256 × 4 | 4.8 M | fine-tuned twice on ensemble labels | 4 |
+| C | D2-v11-ft32-noisy-lc-s33 | Isotropic, wide + deep | 64 / 256 × 4 | 4.8 M | trained on v10 labels, fine-tuned on v11 | 4 |
 | D | EX-ms-lc-s5 | MultiScale | 64 / 256 × 4 | 5.7 M | from scratch on ensemble labels | 3 |
 | E | FX-ms-lc-s6 | MultiScale | 64 / 256 × 4 | 5.7 M | from scratch on ensemble labels | 2 |
 | F | GX-ms-lc-s7 | MultiScale | 64 / 256 × 4 | 5.7 M | from scratch on ensemble labels | 2 |
@@ -209,9 +212,9 @@ scaled to the crop. Without it the detector over-fires in the unknown region.
 ### 4.2 Linking samples
 
 - The linker trains on k-NN candidate graphs (k = 4 both ways, ≤ 20 µm), the same
-  graphs as at inference.
-- **Distractors:** bright intensity peaks without an annotation (up to 256 per frame)
-  are added as nodes. As a source a distractor is a verified wrong parent; as a target
+  graphs as at inference, plus any annotated parent link the k-NN graph missed.
+- **Distractors:** bright intensity peaks without an annotation (up to 256 per frame;
+  64 in the last fine-tunes, B and C) are added as nodes. As a source a distractor is a verified wrong parent; as a target
   its parent is unknown.
 - **15 % of annotated parents are removed** from the source set and labelled
   "new cell", which teaches the explicit null class.
@@ -219,13 +222,14 @@ scaled to the crop. Without it the detector over-fires in the unknown region.
 
 ### 4.3 Losses
 
-Each loss is computed separately on ground truth and on pseudo-labels (§5) and
-combined as **L = L_GT + 0.5 · L_pseudo**, so the sparse ground truth is never
-drowned out.
+The centre and parent losses are computed separately on ground truth and on
+pseudo-labels (§5) and combined as **L = L_GT + 0.5 · L_pseudo**, so the sparse ground
+truth is never drowned out. The sub-voxel offset, division, daughter-pair and velocity
+terms use ground truth only; the count prior uses the organisers' cell-count estimate.
 
 | loss | weight |
 |---|---:|
-| penalty-reduced focal loss on centres | 1.0 |
+| penalty-reduced focal loss on centres [11, 12] | 1.0 |
 | sub-voxel offset (smooth L1, annotated cells only) | 1.0 |
 | parent cross-entropy over candidates + "new cell" | 1.0 |
 | division BCE (positive weight 20, ground truth only) | 0.5 |
@@ -239,24 +243,25 @@ cannot localise anything yet.
 
 ### 4.4 Samples and augmentation
 
-- **Samples:** full-frame 3-frame crops (64 × 256 × 256). 15 % are placed uniformly,
-  25 % are centred on a division, the rest on an annotated cell.
+- **Samples:** full-frame 3-frame crops (64 × 256 × 256). 15 % are placed uniformly;
+  of the others, 25 % are centred on a division and the rest on an annotated cell.
 - **Augmentation:**
   - lateral D4 only (z is never flipped: light attenuation makes it directional);
   - gamma and Gaussian noise;
   - synthetic stage drift: frames shifted laterally as a random walk, up to 6 µm per
     step (most models);
-  - noisy-student noise: shot noise, a mean-preserving depth gain, and for the
+  - noisy-student noise [13]: shot noise, a mean-preserving depth gain, and for the
     fine-tuned isotropic models channel dropout 0.2 and weight decay 0.01;
   - **low-contrast haze:** each frame blended with a 17 µm box blur of itself at a
     random contrast, mimicking hazy, deep movies (+0.005 on validation).
 
 ### 4.5 Optimisation
 
-AdamW, linear warm-up and cosine decay, gradient clipping at 1, and an EMA of the
-weights (decay 0.999) that is the model used at inference. bf16 mixed precision on
-RTX 3090/4090. From scratch: learning rate 1e-4, 32 epochs of 2,048 crops.
-Fine-tuning: 3e-5, 24–32 epochs. Checkpoints are selected on validation loss.
+AdamW [14], linear warm-up and cosine decay [15], gradient clipping at 1, and an EMA of
+the weights [16] (decay 0.999) that is the model used at inference. bf16 mixed
+precision [17] on RTX 3090/4090. From scratch: learning rate 1e-4, 32 epochs of 2,048
+crops (48 for DX; F stopped after 24). Fine-tuning: 3e-5, 24–48 epochs. Checkpoints are selected on
+validation loss (B2 and DX: validation parent loss, with early stopping).
 
 ---
 
@@ -264,16 +269,10 @@ Fine-tuning: 3e-5, 24–32 epochs. Checkpoints are selected on validation loss.
 
 With 3 % of cells annotated, a model trained on ground truth alone never learns to
 separate touching cells and is never penalised for linking to an unannotated
-neighbour. Offline noisy-student self-training fixed both. **The teacher is the whole
+neighbour. Offline noisy-student self-training [13, 18] fixed both. **The teacher is the whole
 pipeline, not one network.**
 
-```mermaid
-flowchart LR
-    T["Teacher<br/>whole pipeline"] -->|"tracks on the<br/>training movies"| PL["Pseudo-labels"]
-    GT["Sparse ground truth"] --> MG["Merge<br/>ground truth wins"]
-    PL --> MG --> S["Student<br/>noisy augmentation"]
-    S -->|"better on validation"| T
-```
+![Teacher → student rounds](figures/teacher_student.png)
 
 ### 5.1 How a label set is made (`biohub-pseudo-labels`)
 
@@ -302,26 +301,7 @@ The final label set holds about 5.0 M cells and 4.9 M links over 195 movies, abo
 
 ### 5.3 The lineage of the final models
 
-```mermaid
-flowchart LR
-    W["W-link-s2<br/>ground truth only"] -->|labels| P["P-l50-s2"]
-    P -->|labels + init| R2["R2-ft24-noisy-s1"]
-    R2 -->|labels + init| A["A: R3-ft24-noisy-lc-s1"]
-    A -->|labels + init| NS1["NS1 (split B)"]
-    NS1 -->|labels| BX["BX wide"]
-    A -->|labels| CX["CX deep"]
-    A --> T10["v10 teacher<br/>A + BX + CX"]
-    BX --> T10
-    CX --> T10
-    T10 -->|labels| B2["B2 (init BX)"]
-    T10 -->|labels| DX["DX"]
-    A --> T11["v11 teacher<br/>A + BX + CX"]
-    BX --> T11
-    CX --> T11
-    T11 -->|labels + init B2| B["B: B3"]
-    T11 -->|labels + init DX| C["C: D2"]
-    T11 -->|labels| DEF["D, E, F: MultiScale<br/>from scratch"]
-```
+![Lineage of the final models](figures/lineage.png)
 
 - The first round gave the largest single gain: +0.008 on validation over the
   ground-truth-only model. Plain self-distillation then flattened; later gains came
@@ -339,28 +319,16 @@ lineage in order.
 ### 6.1 Decoding and test-time augmentation
 
 - Each frame is decoded from the 3-frame window centred on it.
-- Each model runs 2–4 lateral views (rotations / transposes). Outputs, including the
+- Each model runs 2–4 lateral views (90° rotations). Outputs, including the
   offset vectors, are mapped back and averaged in logit space. Descriptors are
   sampled from the view-averaged features, so linking benefits from TTA too. Going
   from 1 to 4 views on an early single model was worth +0.05 score.
-- The per-frame encoder output is cached in fp16 and reused across windows and views
+- The per-frame encoder output is cached (in fp16 under fp16 autocast, as on the T4) and reused across windows and views
   (1.4–1.9 × faster decoding).
 
 ### 6.2 One set of cells, six link opinions
 
-```mermaid
-flowchart LR
-    subgraph M["6 models"]
-        direction TB
-        A["A"] ~~~ B["B"] ~~~ C["C"]
-        D["D"] ~~~ E["E"] ~~~ F["F"]
-    end
-    M -->|mean centre logits| N["Shared cells"]
-    N --> H["Same candidate links<br/>scored by each model's head"]
-    H --> R["Each model's own<br/>re-scorer"]
-    R --> P["Mean P(parent)<br/>and P(new cell)"]
-    P --> ILP["ILP"]
-```
+![One set of cells, six link opinions](figures/ensemble.png)
 
 - **Cells:** the six models' centre logits and offsets are averaged and peaks are
   extracted once.
@@ -378,7 +346,7 @@ already has a "new cell" option.
 ### 6.4 Member-own edge re-scorers
 
 Identity swaps between neighbours are the largest error class (51–57 % of edge
-errors on validation). Each model has a LightGBM re-ranker of each cell's candidate
+errors on validation). Each model has a LightGBM [19] re-ranker of each cell's candidate
 parents (300 trees, 31 leaves, binary objective) with 23 features per candidate link:
 
 | dims | feature |
@@ -402,18 +370,20 @@ movies. A row is a candidate parent of a cell whose annotated cell and annotated
 parent both match decoded cells within 7 µm; the true parent is the positive. During
 validation the trees are applied out-of-fold (5 folds by movie), so no movie is
 scored by trees that saw it. Worth +0.004 to +0.007 per model on validation. At
-inference the trees are evaluated from flat arrays with a compiled tree walk, so no
+inference the trees are evaluated from flat arrays with a compiled tree walk [20], so no
 gradient-boosting library is needed.
 
 ### 6.5 Global ILP
 
 ![Candidate and solved links](figures/links_zoom.png)
 
-*Left: candidate links and their probabilities. Right: the submitted links after the
-ILP and smoothing.*
+*Cyan dots: cells at t; orange crosses: cells at t + 1. Left: candidate links and
+their probabilities. Right: the submitted links after the ILP and smoothing (no
+division in this window).*
 
 Each cell has binary variables *exists*, *appears*, *disappears*, *divides*; each
-candidate link one variable. Flow conservation:
+candidate link one variable. This is the conservation-tracking family of models
+[21, 22]. Flow conservation:
 
 $$\text{appear}_j + \sum_i \text{edge}_{ij} = \text{node}_j \qquad \text{disappear}_i + \sum_j \text{edge}_{ij} = \text{node}_i + \text{div}_i \qquad \text{div}_i \le \text{node}_i$$
 
@@ -438,9 +408,9 @@ removed (+0.009 on validation).
 *Whole-field displacement between consecutive frames on the four public test movies.*
 
 **LP-first solving.** Apart from the division rows the constraint matrix is a network
-matrix, so the LP relaxation is almost integral. The LP is solved with HiGHS, every
+matrix, so the LP relaxation is almost integral. The LP is solved with HiGHS [23], every
 integral variable is fixed, and a small MILP over the fractional variables and their
-neighbourhood finishes the job: 38–166 × faster than branch-and-bound with SCIP, and
+neighbourhood finishes the job: 38–166 × faster than branch-and-bound with SCIP [24], and
 within 0.5 % of the LP bound (otherwise SCIP runs). A greedy solver is the last
 resort. Because every cell and every appearance has a price, the ILP leaves no
 dangling fragments and no repair heuristics are needed.
@@ -458,25 +428,18 @@ are clamped to the volume and rounded.
 
 ## 7. Running in 12 hours on two T4s
 
-```mermaid
-flowchart LR
-    Q["Movie queue"] --> G0["T4 #0 · 6 models<br/>deadline guard"]
-    Q --> G1["T4 #1 · 6 models<br/>deadline guard"]
-    G0 --> FB["Fallbacks<br/>for failed movies"]
-    G1 --> FB
-    FB --> OUT["submission.csv"]
-```
+![Inference on two T4 GPUs](figures/runtime.png)
 
 - **One worker per GPU, one shared queue.** Each worker loads the six models once and
   claims movies by atomically renaming a per-movie file.
-- **fp16, not bf16, on the T4** (no native bf16): 3.5 × faster prediction than
+- **fp16, not bf16, on the T4** (no native bf16) [17]: 3.5 × faster prediction than
   emulated bf16.
 - **Deadline guard.** Before each movie a worker estimates its cost from its recent
   history and picks the richest setting that fits: all views, 75 %, 50 %, then one
   view.
-- **Every movie gets a prediction.** A failed movie is re-run with one view, then with
-  the primary model alone, then with a model-free tracker (difference-of-Gaussians
-  detection and drift-corrected nearest-neighbour links), and finally a placeholder.
+- **Every movie gets a prediction.** A failed movie is retried at the next cheaper
+  level, then re-run with one view, then with the primary model alone, then with a model-free tracker (difference-of-Gaussians
+  detection [25] and drift-corrected nearest-neighbour links), and finally a placeholder.
 - The 4 public test movies take about 15 minutes; the hidden set ran in about
   10 hours.
 
@@ -484,8 +447,8 @@ flowchart LR
 
 ## 8. Validation and results
 
-- **Local metric:** a re-implementation of the official metric, including the
-  per-movie weighting. The CSV our Kaggle notebook writes for the 4 public test
+- **Local metric:** our re-implementation of the official metric, including the
+  per-movie weighting (not part of this repository). The CSV our Kaggle notebook writes for the 4 public test
   movies scores exactly the same locally.
 - **Splits:** each model trains on 165 movies and validates on 30 of its own; the
   4 public test movies are held out from every model. Model A's 30 validation movies
@@ -547,7 +510,7 @@ haze 0.3 (from R3 on), shot noise 0.2 and depth gain 0.15 (from R2 on).
 | NS1-ft24-noisy-lc-s1 | Iso | 48 / 192×3 | 2.47 M | 271828 | R3 | R3 (195 movies) | 24 | 3e-5 | 0.2 | 0.5 | – | teacher |
 | BX-wide-lc-s2 | Iso | 64 / 256×3 | 4.38 M | 271828 | – | NS1 | 32 | 1e-4 | 0 | 0.5 | – | v10/v11 teacher member |
 | CX-deep-lc-s3 | Iso | 48 / 256×4 | 3.55 M | 898 | – | R3 (195 movies) | 32 | 1e-4 | 0 | 0.5 | – | v10/v11 teacher member |
-| B2-v10-e48-noisy-lc-s22 | Iso | 64 / 256×3 | 4.38 M | 271828 | BX (epoch 23) | v10 | ≤ 48* | 3e-5 | 0.2 | 0.5 | – | init of B |
+| B2-v10-e48-noisy-lc-s22 | Iso | 64 / 256×3 | 4.38 M | 271828 | BX (best-e23) | v10 | ≤ 48* | 3e-5 | 0.2 | 0.5 | – | init of B |
 | DX-widedeep-e48-lc-s4 | Iso | 64 / 256×4 | 4.78 M | 816 | – | v10 | ≤ 48* | 1e-4 | 0 | 0.5 | – | init of C |
 | **B3-v11-ft32-noisy-lc-s31** | Iso | 64 / 256×3 | 4.38 M | 271828 | B2 | v11 | 32 | 3e-5 | 0.2 | 0 | – | **B** |
 | **D2-v11-ft32-noisy-lc-s33** | Iso | 64 / 256×4 | 4.78 M | 816 | DX | v11 | 32 | 3e-5 | 0.2 | 0 | – | **C** |
@@ -557,9 +520,11 @@ haze 0.3 (from R3 on), shot noise 0.2 and depth gain 0.15 (from R2 on).
 
 \* early stopping on validation parent loss (patience 10).
 
-**Checkpoints of the two submissions:** `fin` uses the final epoch of B–E and epoch
-24 of F; `best` uses the best-validation-loss epoch of each. Model A is the same in
-both. Each submission has its own six re-scorers.
+**Checkpoints of the two submissions:** `fin` uses the last checkpoint of B–E, `best`
+their best-validation-loss checkpoints. A and F are the same in both: F's run stopped
+after 24 of its 32 scheduled epochs, and its last checkpoint was also its best. Each
+submission has its own six re-scorers. `best-e23` / `best-e20` are the best checkpoints
+up to the 24th / 21st epoch of BX / CX, kept as snapshots for the v10 teacher.
 
 **Compute:** one RTX 3090/4090 per run: 4–10 h per isotropic run, about 17 h per
 MultiScale run (15 GiB at batch 1). Inference: about 7 minutes per movie per T4 for the
@@ -574,9 +539,72 @@ six-model ensemble.
 | predict (`fin` / `best`, or your own models) | `biohub-predict` | [`cli.py`](../src/biohub_tracking/cli.py), [`isotropic/`](../src/biohub_tracking/isotropic) |
 | train one model from a recipe | `biohub-train --recipe recipes/train/<run>.json` | [`training/`](../src/biohub_tracking/training) |
 | pseudo-labels from a teacher ensemble | `biohub-pseudo-labels --ensemble recipes/ensembles/<set>-teacher.json` | [`labels.py`](../src/biohub_tracking/labels.py) |
-| member-own re-scorers | `biohub-train-rescorer --ensemble recipes/ensembles/<spec>.json` | [`training/rescorer.py`](../src/biohub_tracking/training/rescorer.py) |
+| member-own re-scorers | `biohub-train-rescorer --ensemble recipes/ensembles/<spec>.json --names ...` (one name per model; see `tools/reproduce_training.sh`) | [`training/rescorer.py`](../src/biohub_tracking/training/rescorer.py) |
 | the whole training lineage | `bash tools/reproduce_training.sh` | [`recipes/`](../recipes) |
 | every stage on synthetic data, CPU | `python tools/smoke_test.py` | [`notebooks/training.ipynb`](../notebooks/training.ipynb) |
 
 The models are on [Kaggle Models](https://www.kaggle.com/models/jamalsaeedi/biohub-cell-tracking)
 and the inference notebook on [Kaggle](https://www.kaggle.com/code/jamalsaeedi/biohub-cell-tracking-inference).
+
+---
+
+## References
+
+1. Biohub. *Biohub - Cell Tracking During Development.* Kaggle competition, 2026.
+   <https://www.kaggle.com/competitions/biohub-cell-tracking-during-development>
+2. M. Maška et al. *The Cell Tracking Challenge: 10 years of objective benchmarking.* Nature Methods 20,
+   1010–1020, 2023.
+3. O. Ronneberger, P. Fischer, T. Brox. *U-Net: Convolutional Networks for Biomedical Image Segmentation.* MICCAI 2015.
+4. Ö. Çiçek, A. Abdulkadir, S. S. Lienkamp, T. Brox, O. Ronneberger. *3D U-Net: Learning Dense Volumetric
+   Segmentation from Sparse Annotation.* MICCAI 2016.
+5. Y. Wu, K. He. *Group Normalization.* ECCV 2018.
+6. D. Hendrycks, K. Gimpel. *Gaussian Error Linear Units (GELUs).* arXiv:1606.08415, 2016.
+7. P. Veličković, G. Cucurull, A. Casanova, A. Romero, P. Liò, Y. Bengio. *Graph Attention Networks.* ICLR 2018.
+8. A. Vaswani et al. *Attention Is All You Need.* NeurIPS 2017.
+9. B. Gallusser, M. Weigert. *Trackastra: Transformer-based cell tracking for live-cell microscopy.* ECCV 2024.
+    arXiv:2405.15700.
+10. J. Dai, H. Qi, Y. Xiong, Y. Li, G. Zhang, H. Hu, Y. Wei. *Deformable Convolutional Networks.* ICCV 2017.
+11. H. Law, J. Deng. *CornerNet: Detecting Objects as Paired Keypoints.* ECCV 2018.
+12. X. Zhou, D. Wang, P. Krähenbühl. *Objects as Points.* arXiv:1904.07850, 2019.
+13. Q. Xie, M.-T. Luong, E. Hovy, Q. V. Le. *Self-training with Noisy Student improves ImageNet classification.*
+    CVPR 2020.
+14. I. Loshchilov, F. Hutter. *Decoupled Weight Decay Regularization.* ICLR 2019.
+15. I. Loshchilov, F. Hutter. *SGDR: Stochastic Gradient Descent with Warm Restarts.* ICLR 2017.
+16. B. T. Polyak, A. B. Juditsky. *Acceleration of Stochastic Approximation by Averaging.* SIAM Journal on Control
+    and Optimization 30(4), 838–855, 1992.
+17. P. Micikevicius et al. *Mixed Precision Training.* ICLR 2018.
+18. D.-H. Lee. *Pseudo-Label: The Simple and Efficient Semi-Supervised Learning Method for Deep Neural Networks.*
+    ICML 2013 Workshop on Challenges in Representation Learning.
+19. G. Ke, Q. Meng, T. Finley, T. Wang, W. Chen, W. Ma, Q. Ye, T.-Y. Liu. *LightGBM: A Highly Efficient Gradient
+    Boosting Decision Tree.* NeurIPS 2017.
+20. S. K. Lam, A. Pitrou, S. Seibert. *Numba: A LLVM-based Python JIT Compiler.* LLVM-HPC 2015.
+21. B. X. Kausler, M. Schiegg, B. Andres, M. Lindner, U. Köthe, H. Leitte, J. Wittbrodt, L. Hufnagel,
+    F. A. Hamprecht. *A Discrete Chain Graph Model for 3d+t Cell Tracking with High Misdetection Robustness.*
+    ECCV 2012.
+22. M. Schiegg, P. Hanslovsky, B. X. Kausler, L. Hufnagel, F. A. Hamprecht. *Conservation Tracking.* ICCV 2013,
+    2928–2935.
+23. Q. Huangfu, J. A. J. Hall. *Parallelizing the dual revised simplex method.* Mathematical Programming
+    Computation 10, 119–142, 2018.
+24. S. Bolusani et al. *The SCIP Optimization Suite 9.0.* arXiv:2402.17702, 2024.
+25. D. G. Lowe. *Distinctive Image Features from Scale-Invariant Keypoints.* IJCV 60(2), 91–110, 2004.
+
+## How to cite
+
+```bibtex
+@misc{saeedi2026biohubtracking,
+  author       = {Saeedi, Jamal},
+  title        = {Biohub - Cell Tracking During Development: 6th Place Solution},
+  year         = {2026},
+  howpublished = {Kaggle competition write-up},
+  url          = {https://www.kaggle.com/competitions/biohub-cell-tracking-during-development}
+}
+
+@software{saeedi2026biohubtrackingcode,
+  author       = {Saeedi, Jamal},
+  title        = {biohub\_cell\_tracking\_kaggle: 6th place solution to Biohub - Cell Tracking
+                  During Development},
+  year         = {2026},
+  license      = {MIT},
+  url          = {https://github.com/jamal-saeedi/biohub_cell_tracking_kaggle}
+}
+```

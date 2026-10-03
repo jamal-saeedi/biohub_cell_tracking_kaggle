@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you use this code or the models, please cite the solution as below."
+title: "biohub_cell_tracking_kaggle: 6th place solution to Biohub - Cell Tracking During Development"
+type: software
+authors:
+  - family-names: Saeedi
+    given-names: Jamal
+license: MIT
+date-released: 2026-10-03
+repository-code: "https://github.com/jamal-saeedi/biohub_cell_tracking_kaggle"
+url: "https://www.kaggle.com/models/jamalsaeedi/biohub-cell-tracking"
+keywords:
+  - cell tracking
+  - lineage tracing
+  - 3D microscopy
+  - Kaggle
+preferred-citation:
+  type: generic
+  title: "Biohub - Cell Tracking During Development: 6th Place Solution"
+  authors:
+    - family-names: Saeedi
+      given-names: Jamal
+  year: 2026
+  medium: "Kaggle competition write-up"
+  url: "https://www.kaggle.com/competitions/biohub-cell-tracking-during-development"
