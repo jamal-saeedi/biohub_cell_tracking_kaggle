@@ -1,0 +1,131 @@
+biohub_cell_tracking_kaggle/
+├── docs/
+│   ├── figures/
+│   │   ├── annotation.png
+│   │   ├── architecture_isotropic.png
+│   │   ├── architecture_linker.png
+│   │   ├── architecture_multiscale.png
+│   │   ├── drift.png
+│   │   ├── ensemble.png
+│   │   ├── lineage.png
+│   │   ├── links_zoom.png
+│   │   ├── overview.png
+│   │   ├── pipeline_steps.png
+│   │   ├── runtime.png
+│   │   ├── targets.png
+│   │   ├── teacher_student.png
+│   │   └── tracks.gif
+│   ├── MODEL_SUMMARY.md
+│   └── SOLUTION.md
+├── notebooks/
+│   ├── inference.ipynb
+│   └── training.ipynb
+├── recipes/
+│   ├── ensembles/
+│   │   ├── NS1-ft24-noisy-lc-s1-teacher.json
+│   │   ├── P-l50-s2-teacher.json
+│   │   ├── R2-ft24-noisy-s1-teacher.json
+│   │   ├── R3-ft24-noisy-lc-s1-full-teacher.json
+│   │   ├── W-link-s2-teacher.json
+│   │   ├── best.json
+│   │   ├── fin.json
+│   │   ├── v10-teacher.json
+│   │   └── v11-teacher.json
+│   └── train/
+│       ├── B2-v10-e48-noisy-lc-s22.json
+│       ├── B3-v11-ft32-noisy-lc-s31.json
+│       ├── BX-wide-lc-s2.json
+│       ├── CX-deep-lc-s3.json
+│       ├── D2-v11-ft32-noisy-lc-s33.json
+│       ├── DX-widedeep-e48-lc-s4.json
+│       ├── EX-ms-lc-s5.json
+│       ├── FX-ms-lc-s6.json
+│       ├── GX-ms-lc-s7.json
+│       ├── NS1-ft24-noisy-lc-s1.json
+│       ├── P-l50-s2.json
+│       ├── R2-ft24-noisy-s1.json
+│       ├── R3-ft24-noisy-lc-s1.json
+│       └── W-link-s2.json
+├── src/
+│   └── biohub_tracking/
+│       ├── isotropic/
+│       │   ├── __init__.py
+│       │   ├── checkpoint.py
+│       │   ├── config.py
+│       │   ├── decode.py
+│       │   ├── edge_rescorer.py
+│       │   ├── fallback.py
+│       │   ├── graph.py
+│       │   ├── kaggle.py
+│       │   ├── lpfix.py
+│       │   ├── pipeline.py
+│       │   ├── predict.py
+│       │   ├── shard.py
+│       │   ├── solver.py
+│       │   └── volumes.py
+│       ├── models/
+│       │   ├── __init__.py
+│       │   ├── isotropic_lineage.py
+│       │   └── multiscale_lineage.py
+│       ├── postprocess/
+│       │   ├── __init__.py
+│       │   └── smoothing.py
+│       ├── training/
+│       │   ├── __init__.py
+│       │   ├── augment.py
+│       │   ├── candidates.py
+│       │   ├── cli.py
+│       │   ├── corpus.py
+│       │   ├── dataset.py
+│       │   ├── ema.py
+│       │   ├── evaluate.py
+│       │   ├── losses.py
+│       │   ├── optim.py
+│       │   ├── pseudo.py
+│       │   ├── rescorer.py
+│       │   ├── splits.py
+│       │   ├── targets.py
+│       │   └── trainer.py
+│       ├── __init__.py
+│       ├── cli.py
+│       ├── ensembles.py
+│       ├── labels.py
+│       ├── recipe.py
+│       ├── settings.py
+│       ├── submission.py
+│       └── tracking_io.py
+├── tools/
+│   ├── build_kaggle_dataset.py
+│   ├── download_models.py
+│   ├── kernel-metadata.json
+│   ├── make_synthetic_data.py
+│   ├── reproduce_training.sh
+│   └── smoke_test.py
+├── CITATION.cff
+├── LICENSE
+├── README.md
+├── SETTINGS.json
+├── directory_structure.txt
+├── entry_points.md
+├── pyproject.toml
+└── requirements.txt
+
+Created when running (paths from SETTINGS.json and the training command lines):
+
+data/
+├── train/                      competition training data
+│   ├── <stem>.zarr             one 3D time-lapse movie
+│   └── <stem>.geff             its annotated lineage
+└── test/
+    └── <stem>.zarr
+models/                         MODEL_DIR, filled by tools/download_models.py
+├── mres-fin-444322/1/          variant fin (the winning submission)
+│   ├── isotropic_lineage/<run>/best.pt     6 networks
+│   └── rescorers/MRES-FIN-444322-m<k>.npz  6 member-own re-scorers
+└── mres-best-444322/1/         variant best, same layout
+outputs/
+├── submission.csv              SUBMISSION_DIR
+├── work/                       WORK_DIR: per-movie predictions
+├── training/<run>/             biohub-train: best.pt, last.pt, history.json
+├── pseudo_labels/<set>/<stem>.npz          biohub-pseudo-labels
+└── rescorers/<name>.npz        biohub-train-rescorer

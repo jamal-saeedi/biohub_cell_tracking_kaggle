@@ -71,10 +71,14 @@ frames (the MultiScale head adds in-graph motion refinement):
 ├── README.md
 ├── LICENSE                     MIT
 ├── CITATION.cff                how to cite
+├── requirements.txt            pinned dependencies
+├── entry_points.md             every command, what it reads and writes
+├── directory_structure.txt     repository and runtime layout
 ├── SETTINGS.json               input / output paths (local and Kaggle)
 ├── pyproject.toml              package, pinned dependencies, command-line tools
 ├── docs/
 │   ├── SOLUTION.md             the write-up
+│   ├── MODEL_SUMMARY.md        model summary (Kaggle winner documentation)
 │   └── figures/
 ├── notebooks/
 │   ├── inference.ipynb         local and Kaggle inference
@@ -112,6 +116,9 @@ Linux, Python 3.12, an NVIDIA GPU with 16 GB for inference (V100 and T4 tested) 
 ```bash
 pip install -e ".[download,train]"
 ```
+
+or, with every version pinned as in the submissions:
+`pip install -r requirements.txt && pip install -e . --no-deps`.
 
 ## Inference
 

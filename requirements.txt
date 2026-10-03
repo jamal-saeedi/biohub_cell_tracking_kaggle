@@ -1,0 +1,27 @@
+# Python 3.12, Linux x86_64. The versions the submissions ran with: the Kaggle Python
+# image (torch, numpy, scipy, pandas) plus the wheels of the code dataset
+# (https://www.kaggle.com/datasets/jamalsaeedi/biohub-cell-tracking-kaggle, which holds
+# the full pinned set, installed there with --no-deps).
+#
+#   pip install -r requirements.txt
+#   pip install -e . --no-deps
+#
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.10.0
+numpy==2.0.2
+scipy==1.16.3
+pandas==2.3.3
+blosc2==4.7.0
+dask==2026.6.0
+numba==0.65.1
+polars==1.42.0
+pyscipopt==6.2.1
+ilpy==0.6.0
+zarr==3.2.1
+tracksdata @ git+https://github.com/jookuma/tracksdata@980c2d30a
+
+# training: the edge re-scorers
+lightgbm==4.7.0
+
+# tools/download_models.py
+kagglehub==1.0.2
