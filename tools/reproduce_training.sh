@@ -16,7 +16,7 @@ OUT=${OUT:-outputs}
 RUNS=$OUT/training
 LABELS=$OUT/pseudo_labels
 TREES=$OUT/rescorers
-SPLIT_A=314159   # model A's split: the re-scorers of the ensembles are fitted on its validation movies
+SPLIT_A=314159   # model A's split
 SPLIT_B=271828   # NS1's split
 
 train() {  # train RECIPE [biohub-train options]
@@ -81,7 +81,7 @@ train EX-ms-lc-s5 --pseudo-dir "$LABELS/v11"
 train FX-ms-lc-s6 --pseudo-dir "$LABELS/v11"
 train GX-ms-lc-s7 --pseudo-dir "$LABELS/v11"
 
-# Member-own re-scorers of the two shipped ensembles, on model A's validation movies.
+# Member-own re-scorers of the two shipped ensembles.
 rescorers fin $SPLIT_A MRES-FIN-444322-m{0,1,2,3,4,5}
 rescorers best $SPLIT_A MRES-BEST-444322-m{0,1,2,3,4,5}
 

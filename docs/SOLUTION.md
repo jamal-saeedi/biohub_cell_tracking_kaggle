@@ -8,6 +8,20 @@ pipeline and best-validation checkpoints scored private 0.955.
 *Predicted tracks on public test movie `44b6_0113de3b` (z projection, every second
 frame). Each colour is one track; a red ring marks a division.*
 
+Two observations shaped the design. First, only about 3 % of the cells are annotated,
+so most of the image is neither a known cell nor known background, and a model trained
+on the annotation alone is never told when it links a cell to the wrong, unannotated
+neighbour. Second, the hard part of linking is telling apart neighbours that look
+alike, and a linker that sees only coordinates cannot do that. So:
+
+- **one network detects and links.** It reads three frames at native resolution, and
+  its linker scores candidate links from features sampled out of the same image
+  features that found the cells;
+- **the network outputs probabilities a solver can use directly**, including an
+  explicit "new cell" class, so a global ILP needs no hand-tuned repair rules;
+- **the whole pipeline teaches the next model.** Its tracks on the training movies
+  become pseudo-labels for the 97 % of cells nobody annotated.
+
 ## Contents
 
 1. [The task](#1-the-task)
@@ -20,6 +34,7 @@ frame). Each colour is one track; a red ring marks a division.*
 8. [Validation and results](#8-validation-and-results)
 9. [What mattered](#9-what-mattered)
 10. [Model summary](#10-model-summary)
+11. [Code](#11-code)
 
 ---
 
@@ -94,19 +109,13 @@ frame follows a stage jump, so most links are long and parallel.*
 
 Both architectures read a **3-frame window** (t − 1, t, t + 1) at native resolution:
 no resampling, no cropping at inference. Each frame is min–max scaled and z-scored on
-its own.
+its own. A network has two parts: a **detector** (a 3D U-Net-like encoder–decoder with
+temporal fusion) and an **association head** that links the detected cells of two
+consecutive frames.
 
-```mermaid
-flowchart LR
-    F["3 frames"] --> ENC["Encoder<br/>per frame"]
-    ENC --> TF["Temporal fusion"]
-    TF --> DEC["Decoder"]
-    DEC --> CH["Centre heatmap<br/>+ sub-voxel offset"]
-    DEC --> DS["Cell descriptors"]
-    DS --> AH["Association head<br/>sparse graph attention"]
-    AH --> O1["P(parent | cell)<br/>incl. 'new cell'"]
-    AH --> O2["division · velocity ± σ<br/>daughter pairs"]
-```
+![IsotropicLineageNet](figures/architecture_isotropic.png)
+
+![Association head](figures/architecture_linker.png)
 
 1. **Encoder (per frame).** A 3D convolutional stack (Conv3d → GroupNorm → GELU) that
    handles the 4:1 anisotropy in two steps: two lateral-only reductions reach a
@@ -137,6 +146,8 @@ appearance cost (§6.5).
 
 ### 3.2 The two architectures
 
+![MultiScaleLineageNet](figures/architecture_multiscale.png)
+
 | | IsotropicLineageNet | MultiScaleLineageNet |
 |---|---|---|
 | Temporal fusion | one learned sample per neighbour frame, coarse grid | gated fusion at two scales (coarse + isotropic), several learned samples per neighbour; the gate starts at zero |
@@ -159,6 +170,19 @@ appearance cost (§6.5).
 
 Every model has its **own random, movie-disjoint train/validation split**, so the
 members make different mistakes. The full per-model table is in §10.
+
+### 3.4 Parameters per component
+
+| component | A (Iso, c 48, h 192, L 3) | B (Iso, c 64, h 256, L 3) | C (Iso, c 64, h 256, L 4) | D–F (MultiScale) |
+|---|---:|---:|---:|---:|
+| encoder (stem → coarse) | 0.78 M | 1.39 M | 1.39 M | 1.61 M |
+| temporal fusion | 0.51 M | 0.91 M | 0.91 M | 1.13 M (coarse 0.90 + isotropic 0.23) |
+| decoder, adapters, centre / offset heads | 0.28 M | 0.50 M | 0.50 M | 0.72 M |
+| association head | 0.90 M | 1.59 M | 1.99 M | 2.22 M |
+| of which the daughter-pair head (training only) | 0.11 M | 0.20 M | 0.20 M | 0.20 M |
+| **total** | **2.47 M** | **4.38 M** | **4.78 M** | **5.68 M** |
+
+c = feature channels, h = association width, L = graph-attention blocks.
 
 ---
 
@@ -355,28 +379,31 @@ already has a "new cell" option.
 
 Identity swaps between neighbours are the largest error class (51–57 % of edge
 errors on validation). Each model has a LightGBM re-ranker of each cell's candidate
-parents (300 trees, 31 leaves, binary objective) with 23 features per link:
+parents (300 trees, 31 leaves, binary objective) with 23 features per candidate link:
 
-- the model's log-probability, its rank, the margin to the best rival, the number of
-  candidates and the "new cell" probability;
-- raw and drift-corrected distances split into z and lateral parts, and the velocity
-  residual;
-- the detection confidence of both cells and the parent's division score;
-- competition for the parent: its best score to another cell, how many cells rank it
-  first, its out-degree;
-- local density, depth and relative time.
+| dims | feature |
+|---:|---|
+| 5 | the model's log-probability, its rank among the cell's candidates, the margin to the best rival, the number of candidates, the "new cell" log-probability |
+| 2 | distance, raw and drift-corrected |
+| 4 | z and lateral displacement, raw and after removing the frame's stage drift |
+| 2 | velocity residual, total and in z |
+| 3 | centre logit of both cells, division logit of the parent |
+| 3 | competition for the parent: its best score to another cell, how many cells rank it first, its number of candidate children |
+| 2 | local density (cells within 10 µm) around both cells |
+| 2 | depth (z) of the cell and relative time in the movie |
 
 The re-ranked distribution keeps the "new cell" probability untouched:
 
 $$\log P'(\text{parent}) = \log(1 - P_{new}) + \text{log-softmax}(\text{tree scores over the candidates})$$
 
-**Training (`biohub-train-rescorer`).** The ensemble decodes the 30 validation movies
-of model A's split; each model's trees are fitted on that model's own scores of the
-shared cells. A row is a candidate parent of a cell whose annotated cell and
-annotated parent both match decoded cells within 7 µm. For model A these movies are
-held out; for the other members part of them were training movies. Worth +0.004 to
-+0.007 per model on validation. At inference the trees are evaluated from flat
-arrays with a compiled tree walk, so no gradient-boosting library is needed.
+**Training (`biohub-train-rescorer`).** Each member has its own trees, fitted on that
+member's own scores on the ensemble's shared cells, over its own held-out validation
+movies. A row is a candidate parent of a cell whose annotated cell and annotated
+parent both match decoded cells within 7 µm; the true parent is the positive. During
+validation the trees are applied out-of-fold (5 folds by movie), so no movie is
+scored by trees that saw it. Worth +0.004 to +0.007 per model on validation. At
+inference the trees are evaluated from flat arrays with a compiled tree walk, so no
+gradient-boosting library is needed.
 
 ### 6.5 Global ILP
 
@@ -537,3 +564,19 @@ both. Each submission has its own six re-scorers.
 **Compute:** one RTX 3090/4090 per run: 4–10 h per isotropic run, about 17 h per
 MultiScale run (15 GiB at batch 1). Inference: about 7 minutes per movie per T4 for the
 six-model ensemble.
+
+---
+
+## 11. Code
+
+| step | command | code |
+|---|---|---|
+| predict (`fin` / `best`, or your own models) | `biohub-predict` | [`cli.py`](../src/biohub_tracking/cli.py), [`isotropic/`](../src/biohub_tracking/isotropic) |
+| train one model from a recipe | `biohub-train --recipe recipes/train/<run>.json` | [`training/`](../src/biohub_tracking/training) |
+| pseudo-labels from a teacher ensemble | `biohub-pseudo-labels --ensemble recipes/ensembles/<set>-teacher.json` | [`labels.py`](../src/biohub_tracking/labels.py) |
+| member-own re-scorers | `biohub-train-rescorer --ensemble recipes/ensembles/<spec>.json` | [`training/rescorer.py`](../src/biohub_tracking/training/rescorer.py) |
+| the whole training lineage | `bash tools/reproduce_training.sh` | [`recipes/`](../recipes) |
+| every stage on synthetic data, CPU | `python tools/smoke_test.py` | [`notebooks/training.ipynb`](../notebooks/training.ipynb) |
+
+The models are on [Kaggle Models](https://www.kaggle.com/models/jamalsaeedi/biohub-cell-tracking)
+and the inference notebook on [Kaggle](https://www.kaggle.com/code/jamalsaeedi/biohub-cell-tracking-inference).

@@ -53,6 +53,23 @@ flowchart LR
    and several teacher → student rounds in which the teacher is the whole pipeline
    above and its tracks become pseudo-labels.
 
+### The two networks
+
+![IsotropicLineageNet](docs/figures/architecture_isotropic.png)
+
+![MultiScaleLineageNet](docs/figures/architecture_multiscale.png)
+
+Both share the association head that links the cells of two consecutive frames:
+
+![Association head](docs/figures/architecture_linker.png)
+
+| | IsotropicLineageNet | MultiScaleLineageNet |
+|---|---|---|
+| models | A (c 48), B, C (c 64) | D, E, F (c 64) |
+| parameters | 2.47 M, 4.38 M, 4.78 M | 5.68 M |
+| temporal fusion | one learned sample per neighbour frame, coarse grid | gated, on the coarse and the 1.625 µm grid |
+| linking features | the detector's | own adapter + learned descriptor samples |
+
 ## Layout
 
 ```
