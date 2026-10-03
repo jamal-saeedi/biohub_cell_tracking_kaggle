@@ -1,0 +1,20 @@
+{
+  "local": {
+    "TEST_DATA_DIR": "data/test",
+    "MODEL_DIR": "models",
+    "SUBMISSION_DIR": "outputs",
+    "WORK_DIR": "outputs/work"
+  },
+  "kaggle": {
+    "TEST_DATA_DIR": [
+      "/kaggle/input/competitions/biohub-cell-tracking-during-development/test",
+      "/kaggle/input/biohub-cell-tracking-during-development/test"
+    ],
+    "MODEL_DIR": [
+      "/kaggle/input/biohub-cell-tracking/pytorch",
+      "/kaggle/input/models/jamalsaeedi/biohub-cell-tracking/pytorch"
+    ],
+    "SUBMISSION_DIR": "/kaggle/working",
+    "WORK_DIR": "/kaggle/working"
+  }
+}

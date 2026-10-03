@@ -1,0 +1,11 @@
+# model files come from Kaggle Models (tools/download_models.py)
+/models/
+# competition data and run outputs
+/data/
+/outputs/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.ipynb_checkpoints/

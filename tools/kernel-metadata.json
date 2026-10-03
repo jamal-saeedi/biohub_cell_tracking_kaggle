@@ -1,0 +1,20 @@
+{
+  "id": "jamalsaeedi/biohub-cell-tracking-inference",
+  "title": "biohub cell tracking inference",
+  "code_file": "../notebooks/inference.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_tpu": false,
+  "enable_internet": false,
+  "machine_shape": "NvidiaTeslaT4",
+  "docker_image": "gcr.io/kaggle-private-byod/python@sha256:37c64f7dd9c54116ecd1bcc88817c5469b88387388fade02bfa8bf3fc647d461",
+  "competition_sources": ["biohub-cell-tracking-during-development"],
+  "dataset_sources": ["jamalsaeedi/biohub-cell-tracking-kaggle"],
+  "kernel_sources": [],
+  "model_sources": [
+    "jamalsaeedi/biohub-cell-tracking/pyTorch/mres-fin-444322/1",
+    "jamalsaeedi/biohub-cell-tracking/pyTorch/mres-best-444322/1"
+  ]
+}
