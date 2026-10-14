@@ -41,8 +41,9 @@ alike, and a linker that sees only coordinates cannot do that. So:
 7. [Running in 12 hours on two T4s](#7-running-in-12-hours-on-two-t4s)
 8. [Validation and results](#8-validation-and-results)
 9. [What mattered](#9-what-mattered)
-10. [Model summary](#10-model-summary)
-11. [Code](#11-code)
+10. [What did not work](#10-what-did-not-work)
+11. [Model summary](#11-model-summary)
+12. [Code](#12-code)
 
 [References](#references) · [How to cite](#how-to-cite)
 
@@ -172,7 +173,7 @@ jointly with the detector.
 | F | GX-ms-lc-s7 | MultiScale | 64 / 256 × 4 | 5.7 M | from scratch on ensemble labels | 2 |
 
 Every model has its **own random, movie-disjoint train/validation split**, so the
-members make different mistakes. The full per-model table is in §10.
+members make different mistakes. The full per-model table is in §11.
 
 ### 3.4 Parameters per component
 
@@ -495,7 +496,28 @@ Key takeaways:
 
 ---
 
-## 10. Model summary
+## 10. What did not work
+
+Each idea was compared with the same pipeline without it, on the validation movies or
+the 4 public test movies.
+
+| idea | what happened |
+|---|---|
+| ranking models by validation loss | a model with better loss and cell recall scored 0.878, against 0.885 for a weaker-looking one; we rank every model end to end on the score |
+| mean-teacher consistency (EMA teacher, same view) | −0.001 against the same code without it |
+| weight soup of two models | −0.005 validation, CI [−0.009, −0.001] |
+| the multiscale models' cells in the ensemble | 0.939 against 0.942 validation; they over-predict cells, so they only contribute links |
+| one re-scorer stacked over all members | lower than one re-scorer per member on every submission (0.958 against 0.959 public on the same models) |
+| solver fixes for identity swaps (z-discounted distance, re-linking smoothed tracks) | +0.0001; the solver follows the linker, so swaps have to be fixed in the network |
+| calibrating the link head (temperature 0.5–2.0, node and division scaling) | no gain; the parent softmax is already calibrated (ECE 0.002) |
+| lowering the cell threshold to recover missed cells | raw link Jaccard falls monotonically: the extra cells are false ones |
+| pruning candidate links by probability | worse at every cut (0.900 → 0.867 at 0.48) |
+| a difference-of-Gaussians detector as a cell veto | +0.0005, CI across 0; its recall at 2.5 µm is 0.64 against the network's 0.86 |
+| choosing the final submission by public score | our best public score, 0.96285, was 0.94824 private; the selected submission was 0.96185 public, 0.95398 private |
+
+---
+
+## 11. Model summary
 
 All runs: 3-frame full-frame crops (64 × 256 × 256), 2,048 crops per epoch, effective
 batch 8, AdamW, EMA 0.999, count prior weight 1.0, pseudo-label weight 0.5, low-contrast
@@ -532,7 +554,7 @@ six-model ensemble.
 
 ---
 
-## 11. Code
+## 12. Code
 
 | step | command | code |
 |---|---|---|
