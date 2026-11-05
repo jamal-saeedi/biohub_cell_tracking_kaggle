@@ -16,6 +16,7 @@ Both variants reproduce their Kaggle submissions byte for byte on the 4 public t
 movies (Kaggle 2×T4).
 
 **The solution, step by step, with figures: [docs/SOLUTION.md](docs/SOLUTION.md).**
+**The talk, with speaker notes and a numbered reference list: [docs/Biohub_Winner_Presentation.pptx](docs/Biohub_Winner_Presentation.pptx).**
 
 ## Links
 
@@ -23,6 +24,7 @@ movies (Kaggle 2×T4).
 |---|---|
 | Code (this repository) | https://github.com/jamal-saeedi/biohub_cell_tracking_kaggle |
 | Write-up | [docs/SOLUTION.md](docs/SOLUTION.md) |
+| Presentation (slides with speaker notes) | [docs/Biohub_Winner_Presentation.pptx](docs/Biohub_Winner_Presentation.pptx) |
 | Models (MIT) | https://www.kaggle.com/models/jamalsaeedi/biohub-cell-tracking |
 | Code dataset (package + pinned wheels) | https://www.kaggle.com/datasets/jamalsaeedi/biohub-cell-tracking-kaggle |
 | Kaggle notebook | https://www.kaggle.com/code/jamalsaeedi/biohub-cell-tracking-inference |
@@ -244,4 +246,5 @@ If you use this code or the models, please cite the solution:
 ```
 
 The methods and tools the solution builds on are cited in
-[docs/SOLUTION.md](docs/SOLUTION.md#references).
+[docs/SOLUTION.md](docs/SOLUTION.md#references); the same list, with the same numbers, is the last slide of the
+[presentation](docs/Biohub_Winner_Presentation.pptx).
